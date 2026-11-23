@@ -1,0 +1,28 @@
+{
+  "name": "the-gate-cloudflare",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The Gate — Streamtape/Vidmoly/MixDrop/Abyss -> TMDB -> Stremio addon (Cloudflare Workers + D1)",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute anime-db --file=schema.sql --remote",
+    "db:init:local": "wrangler d1 execute anime-db --file=schema.sql --local",
+    "typecheck": "tsc --noEmit",
+    "check": "wrangler deploy --dry-run --outdir=dist"
+  },
+  "dependencies": {
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241224.0",
+    "typescript": "^5.7.2",
+    "wrangler": "^3.99.0"
+  },
+  "allowScripts": {
+    "workerd@1.20250718.0": true,
+    "esbuild@0.17.19": true,
+    "sharp@0.33.5": true
+  }
+}

@@ -1,0 +1,18 @@
+name = "my-anime-gate"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "anime-db"
+database_id = "aeb45760-6f5d-488a-aecd-2532fca0561a"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+ADDON_NAME = "The Gate"
+ADDON_DESCRIPTION = "Your private Nuvio catalog"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+CRON_ENABLED = "true"
+MIXDROP_EMAIL = "vsati9954@gmail.com"
