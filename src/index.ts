@@ -319,7 +319,8 @@ function parseFilename(fileName: string) {
     // release tags: bracket groups (release groups / audio labels), quality, codecs
     .replace(/\[[^\]]*\]/g, " ")
     .replace(/_[^_]*_(?=\s|$)/g, " ")
-    .replace(/\b(480p|720p|1080p|2160p|4k|WEB-?DL|WEB-?Rip|BluRay|BDRip|x26[45]|HEVC|AAC\s?2\s?0|x264|x265|Multi\s?Audio|ESub|ESubs|Subbed|Dubbed|HDR10\+?|10bit|AnimeDubHindi|Anime\s?Dub\s?Hindi|HindiDub|PROPER|REPACK|AMZN|NF|DNP)\b/gi, " ")
+    .replace(/\b(480p|720p|1080p|2160p|4k|WEB-?DL|WEB-?Rip|WEB|BluRay|BDRip|BRRip|HDRip|CAM|TS|REMUX|DVD|x26[45]|HEVC|H\.?26[45]|AVC|AAC\s?2\s?0|Multi\s?Audio|ESub|ESubs|Subbed|Dubbed|Dual|Multi|HDR10\+?|10bit|AnimeDubHindi|Anime\s?Dub\s?Hindi|HindiDub|PROPER|REPACK|AMZN|NF|DNP|UNCUT|CBFC|ORG)\b/gi, " ")
+    .replace(/\b(Hindi|Tamil|Telugu|English|Malayalam|Kannada|Bengali|Polish|Spanish|French|Russian|Arabic|Korean|Japanese|Chinese|Portuguese|Italian|German|Turkish|Indonesian|Thai|Vietnamese)(?:[-\s]+(?:Hindi|Tamil|Telugu|English|Malayalam|Kannada|Bengali|Polish|Spanish|French|Russian|Arabic|Korean|Japanese|Chinese|Portuguese|Italian|German|Turkish|Indonesian|Thai|Vietnamese))*[-\s]?/gi, " ")
     .replace(/[._]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -343,7 +344,8 @@ function parseFilename(fileName: string) {
   const title = clean
     .replace(/[Ss]\d+[_\s\-]?[Ee]\d+/i, "")
     .replace(/\(\d{4}\)|\.?19\d{2}|\.?20\d{2}/g, "")
-    .replace(/\.?1080p|\.?720p|\.?4k|\.?WEB-?DL|\.?BluRay|\.?x26[45]|\.?HEVC|\.?AAC|\.?H\.?264|\.?H\.?265|\.?AVC|\.?MP4|\.?MKV/gi, "")
+    .replace(/\.?1080p|\.?720p|\.?4k|\.?WEB-?DL|\.?BluRay|\.?x26[45]|\.?HEVC|\.?AAC|\.?H\.?264|\.?H\.?265|\.?AVC|\.?MP4|\.?MKV|\.?ESubs?/gi, " ")
+    .replace(/(?:Hindi|Tamil|Telugu|English|Malayalam|Kannada|Bengali)(?:[-\s]+(?:Hindi|Tamil|Telugu|English|Malayalam|Kannada|Bengali))*/gi, " ")
     .replace(/[._]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -356,16 +358,42 @@ const stripLangTags = (s: string) =>
   s.replace(new RegExp(`\\b(?:${LANG_WORDS})(?:[-\\s]+(?:${LANG_WORDS}))*\\b`, "gi"), " ")
    .replace(/\s+/g, " ").trim();
 
-/** Title match: 2 shared words, ya 1 shared + same year, ya single-word exact. */
+/** Title match + fuzzy typo tolerance (Ranabaali/Ranabali, Cisza Nocna/Night Silence etc). */
 function titleMatches(query: string, name: string, queryYear?: number | null, resultYear?: number | null): boolean {
   const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  const q = norm(query).split(" ").filter((w) => w.length > 2);
-  const n = new Set(norm(name).split(" ").filter((w) => w.length > 2));
+  const qs = norm(query), ns = norm(name);
+  const q = qs.split(" ").filter((w) => w.length > 2);
+  const na = ns.split(" ").filter((w) => w.length > 2);
+  const n = new Set(na);
   if (!q.length) return false;
+  // year clash (2+ different) → reject wrong movie
+  if (queryYear && resultYear && Math.abs(queryYear - resultYear) > 2) return false;
   const shared = q.filter((w) => n.has(w)).length;
   if (shared >= 2) return true;
   if (shared >= 1 && queryYear && resultYear && queryYear === resultYear) return true;
-  return q.length === 1 && shared === 1;
+  if (q.length === 1 && shared === 1) return true;
+  // fuzzy: single-token edit distance <= 1 for longer words, or substring
+  const fuzzy = (a: string, b: string) => {
+    if (a === b) return true;
+    if (a.length < 5 || b.length < 5) return false;
+    if (a.includes(b) || b.includes(a)) return true;
+    const lev = (x: string, y: string) => {
+      const dp = Array.from({ length: y.length + 1 }, (_, i) => i);
+      for (let i = 1; i <= x.length; i++) {
+        let prev = dp[0]; dp[0] = i;
+        for (let j = 1; j <= y.length; j++) {
+          const t = dp[j];
+          dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (x[i - 1] === y[j - 1] ? 0 : 1));
+          prev = t;
+        }
+      }
+      return dp[y.length];
+    };
+    return lev(a, b) <= 1;
+  };
+  if (q.length === 1 && na.length === 1 && fuzzy(q[0], na[0])) return true;
+  if (q.length === na.length && q.every((w, i) => fuzzy(w, na[i]))) return true;
+  return false;
 }
 
 async function tmdbMatch(env: Env, parsed: ReturnType<typeof parseFilename>) {
@@ -1008,10 +1036,12 @@ async function extractUfoload(inputUrl: string, pageUrl?: string): Promise<strin
 async function listStreamtape(env: Env) {
   const login = env.STREAMTAPE_USER || env.STREAMTAPE_LOGIN;
   if (!login || !env.STREAMTAPE_KEY) return [];
-  const { ok, json } = await fetchJson(
-    `https://api.streamtape.com/file/list?login=${encodeURIComponent(login)}&key=${encodeURIComponent(env.STREAMTAPE_KEY)}`,
-    { Referer: "https://streamtape.com/" },
-  );
+  let ok = false, json: any = null;
+  for (const api of ["https://api.streamtape.com/file/list", "https://api.streamtape.to/file/list"]) {
+    const r = await fetchJson(`${api}?login=${encodeURIComponent(login)}&key=${encodeURIComponent(env.STREAMTAPE_KEY)}`, { Referer: "https://streamtape.com/" });
+    if (r.ok && r.json) { ok = true; json = r.json; break; }
+    if (r.status === 404) continue;
+  }
   if (!ok || json?.status !== 200) return [];
   return (json?.result?.files || []).map((f: any) => ({
     id: String(f.id), host: "streamtape", fileName: String(f.file_name || f.name || ""),
