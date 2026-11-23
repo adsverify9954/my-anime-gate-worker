@@ -442,7 +442,7 @@ async function tmdbMatch(env: Env, parsed: ReturnType<typeof parseFilename>) {
     const stripped = [...parts, ...aka].map(stripLangTags).filter(Boolean);
     const candidates = [...new Set([
       parsed.title, stripLangTags(parsed.title), ...parts, ...aka, ...stripped,
-    ])].filter(Boolean).slice(0, 5);
+    ])].filter(Boolean).slice(0, 2);
     // SxxEyy = TV episode \u2192 tv pehle try karo (movie search galat match de sakta hai).
     const types: ("movie" | "tv")[] = parsed.season != null ? ["tv", "movie"] : ["movie", "tv"];
     for (const candidate of candidates) {
@@ -1466,7 +1466,7 @@ async function runSync(env: Env): Promise<number> {
   let ingested = 0;
   let processedThisRun = 0;
   // Per-run processing cap (subrequest limit safety) + TMDB/extractor call budget.
-  const MAX_PROCESSED_PER_RUN = 15;
+  const MAX_PROCESSED_PER_RUN = 8;
   const stmts: any[] = [];
   // Naye upload ka pageUrl marker \u2192 agli sync me dobara extract/TMDB call nahi.
   // Value = "<rowId>|<fileRef>" \u2014 file ref se pata chalta hai ki ye file pehle se
