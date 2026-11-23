@@ -2955,7 +2955,9 @@ app.get("/proxy", async (c) => {
 app.get("/debug/names", async (c) => {
   const host = (c.req.query("host") || "all").toLowerCase();
   const apply = c.req.query("apply") === "1";
-  const limit = Math.min(parseInt(c.req.query("limit") || "20", 10) || 20, 50);
+  const limit = Math.min(parseInt(c.req.query("limit") || "20", 10) || 20, 25);
+  const offset = Math.max(0, parseInt(c.req.query("offset") || "0", 10) || 0);
+  const skipRenamed = c.req.query("skipRenamed") === "1";
   const jobs: any[] = [];
   try {
     if (host === "all" || host === "streamtape") {
@@ -2968,8 +2970,9 @@ app.get("/debug/names", async (c) => {
     return c.json({ ok: false, error: String(e?.message ?? e) }, 500, GATE_RESOLVE_CORS as any);
   }
 
+  const allJobs = skipRenamed ? jobs.filter((f: any) => !/^tmdb_\d+_/i.test(String(f.fileName || ""))) : jobs;
   const results: any[] = [];
-  for (const f of jobs.slice(0, limit)) {
+  for (const f of allJobs.slice(offset, offset + limit)) {
     const parsed = parseFilename(String(f.fileName || ""));
     const m = await tmdbMatch(c.env, parsed);
     if (!m) {
@@ -3013,7 +3016,7 @@ app.get("/debug/names", async (c) => {
     }
     results.push({ host: f.host, id: f.id, old: f.fileName, new: newName, tmdbId: m.tmdbId, renamed, error });
   }
-  return c.json({ ok: true, apply, scanned: jobs.length, results }, 200, GATE_RESOLVE_CORS as any);
+  return c.json({ ok: true, apply, scanned: allJobs.length, offset, results }, 200, GATE_RESOLVE_CORS as any);
 });
 
 export default app;
