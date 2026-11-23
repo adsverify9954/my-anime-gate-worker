@@ -3019,4 +3019,10 @@ app.get("/debug/names", async (c) => {
   return c.json({ ok: true, apply, scanned: allJobs.length, offset, results }, 200, GATE_RESOLVE_CORS as any);
 });
 
+
+app.get("/debug/uploads", async (c) => {
+  const raw = parseUploadsJson(c.env);
+  return c.json({ ok: true, uploads: raw.map((f: any) => ({ host: f.host, id: f.id, fileName: f.fileName, pageUrl: f.pageUrl })) }, 200, GATE_RESOLVE_CORS as any);
+});
+
 export default app;
