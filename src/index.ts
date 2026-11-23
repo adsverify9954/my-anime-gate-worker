@@ -369,7 +369,10 @@ function titleMatches(query: string, name: string, queryYear?: number | null, re
   // year clash (2+ different) → reject wrong movie
   if (queryYear && resultYear && Math.abs(queryYear - resultYear) > 2) return false;
   const shared = q.filter((w) => n.has(w)).length;
-  if (shared >= 2) return true;
+  if (shared >= 2) {
+    const idx = q.map((w) => na.indexOf(w));
+    if (idx.every((v, i) => v >= 0 && (i === 0 || v > idx[i - 1]))) return true;
+  }
   if (shared >= 1 && queryYear && resultYear && queryYear === resultYear) return true;
   if (q.length === 1 && shared === 1) return true;
   // fuzzy: single-token edit distance <= 1 for longer words, or substring
