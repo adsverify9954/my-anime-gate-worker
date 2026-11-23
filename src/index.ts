@@ -3083,4 +3083,21 @@ app.get("/debug/runsync", async (c) => {
   }
 });
 
+
+app.get("/debug/fetch", async (c) => {
+  const url = c.req.query("url") || "";
+  const t = gateParseExternalUrl(url);
+  if (!t) return c.json({ ok:false, error:"bad url" }, 400);
+  try {
+    const r = await fetch(t.href, { headers: { "User-Agent": GATE_RESOLVE_UA, Referer: t.origin + "/", Accept: "*/*" }, redirect: "follow" });
+    const text = await r.text();
+    return c.json({
+      ok:true, status:r.status, final:r.url, ct:r.headers.get("content-type"), size:text.length,
+      getvideo:(text.match(/get_video/g)||[]).length,
+      relmatch:(text.match(/\/streamtape\.com\/get_video/gi)||[]).length,
+      snippet:text.slice(Math.max(0,text.indexOf("get_video")-90), text.indexOf("get_video")+160),
+    }, 200, GATE_RESOLVE_CORS as any);
+  } catch(e:any) { return c.json({ok:false,error:String(e)},500); }
+});
+
 export default app;
