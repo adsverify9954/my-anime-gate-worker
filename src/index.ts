@@ -3125,4 +3125,28 @@ app.get("/debug/fetch", async (c) => {
   } catch(e:any) { return c.json({ok:false,error:String(e)},500); }
 });
 
+
+// Streamtape: resolve + stream in ONE invocation (download links are IP-locked & short-lived)
+app.get("/gate/st/:id", async (c) => {
+  const id = c.req.param("id") || "";
+  if (!/^[A-Za-z0-9]+$/.test(id)) return c.text("bad id", 400);
+  try {
+    const direct = await streamtapeApiDirect(c.env, id);
+    if (!direct) return c.text("resolve failed", 502);
+    const headers: Record<string,string> = { "User-Agent": GATE_RESOLVE_UA, Referer: "https://streamtape.com/" };
+    const range = c.req.header("Range");
+    if (range) headers["Range"] = range;
+    const res = await fetch(direct, { headers, redirect: "follow" });
+    const out = new Headers();
+    for (const k of ["content-type","content-length","accept-ranges","content-range","etag"]) {
+      const v = res.headers.get(k); if (v) out.set(k, v);
+    }
+    out.set("Access-Control-Allow-Origin", "*");
+    out.set("Cache-Control", "no-store");
+    return new Response(res.body, { status: res.status, headers: out });
+  } catch (e: any) {
+    return c.text("upstream " + String(e?.message ?? e).slice(0, 50), 502);
+  }
+});
+
 export default app;
