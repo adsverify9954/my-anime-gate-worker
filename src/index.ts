@@ -318,11 +318,14 @@ function parseFilename(fileName: string) {
     .replace(/\.[a-z0-9]+$/i, "")
     // release tags: bracket groups (release groups / audio labels), quality, codecs
     .replace(/\[[^\]]*\]/g, " ")
-    .replace(/\b(480p|720p|1080p|2160p|4k|WEB-?DL|WEBRip|BluRay|x26[45]|HEVC|AAC\s?2\s?0|x264|x265|Multi\s?Audio|ESub|ESubs|Dubbed|HDR10\+?|10bit|AnimeDubHindi|Anime\s?Dub\s?Hindi|HindiDub)\b/gi, " ")
+    .replace(/_[^_]*_(?=\s|$)/g, " ")
+    .replace(/\b(480p|720p|1080p|2160p|4k|WEB-?DL|WEB-?Rip|BluRay|BDRip|x26[45]|HEVC|AAC\s?2\s?0|x264|x265|Multi\s?Audio|ESub|ESubs|Subbed|Dubbed|HDR10\+?|10bit|AnimeDubHindi|Anime\s?Dub\s?Hindi|HindiDub|PROPER|REPACK|AMZN|NF|DNP)\b/gi, " ")
     .replace(/[._]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  const out = { tmdbId: null as number | null, season: null as number | null, episode: null as number | null, title: null as string | null };
+  const out = { tmdbId: null as number | null, season: null as number | null, episode: null as number | null, title: null as string | null, year: null as number | null };
+  const ym = clean.match(/\((19\d{2}|20\d{2})\)|(?:\s|^)(19\d{2}|20\d{2})(?:\s|$)/);
+  if (ym) out.year = parseInt(ym[1] || ym[2], 10);
   const tmdbMatch = clean.match(/tmdb[_\s]?(\d+)(?:[_\s\-]?[Ss](\d+)[_\s\-]?[Ee](\d+))?/);
   if (tmdbMatch) {
     out.tmdbId = parseInt(tmdbMatch[1], 10);
@@ -348,14 +351,20 @@ function parseFilename(fileName: string) {
   return out;
 }
 
-/** Title match check: >=2 shared words, ya single-word query ka exact token match. */
-function titleMatches(query: string, name: string): boolean {
+const LANG_WORDS = "Hindi|Tamil|Telugu|English|Malayalam|Kannada|Bengali|Polish|Spanish|French|Russian|Arabic|Korean|Japanese|Chinese|Portuguese|Italian|German|Turkish|Indonesian|Thai|Vietnamese|Multi";
+const stripLangTags = (s: string) =>
+  s.replace(new RegExp(`\\b(?:${LANG_WORDS})(?:[-\\s]+(?:${LANG_WORDS}))*\\b`, "gi"), " ")
+   .replace(/\s+/g, " ").trim();
+
+/** Title match: 2 shared words, ya 1 shared + same year, ya single-word exact. */
+function titleMatches(query: string, name: string, queryYear?: number | null, resultYear?: number | null): boolean {
   const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const q = norm(query).split(" ").filter((w) => w.length > 2);
   const n = new Set(norm(name).split(" ").filter((w) => w.length > 2));
   if (!q.length) return false;
   const shared = q.filter((w) => n.has(w)).length;
   if (shared >= 2) return true;
+  if (shared >= 1 && queryYear && resultYear && queryYear === resultYear) return true;
   return q.length === 1 && shared === 1;
 }
 
@@ -401,7 +410,11 @@ async function tmdbMatch(env: Env, parsed: ReturnType<typeof parseFilename>) {
     // "Anime S01E01 - Real Title" form me hote hain \u2014 pehle wala part search
     // fail karta tha (tmdb-miss) aur video catalog me dikhai hi nahi deta tha.
     const parts = parsed.title.split(/\s+[-\u2013\u2014]\s+/).map((x) => x.trim()).filter(Boolean);
-    const candidates = [...new Set([parsed.title, ...parts])].filter(Boolean).slice(0, 3);
+    const aka = parsed.title.split(/\s+aka\s+/i).map((x) => x.trim()).filter(Boolean);
+    const stripped = [...parts, ...aka].map(stripLangTags).filter(Boolean);
+    const candidates = [...new Set([
+      parsed.title, stripLangTags(parsed.title), ...parts, ...aka, ...stripped,
+    ])].filter(Boolean).slice(0, 5);
     // SxxEyy = TV episode \u2192 tv pehle try karo (movie search galat match de sakta hai).
     const types: ("movie" | "tv")[] = parsed.season != null ? ["tv", "movie"] : ["movie", "tv"];
     for (const candidate of candidates) {
@@ -412,7 +425,9 @@ async function tmdbMatch(env: Env, parsed: ReturnType<typeof parseFilename>) {
         if (!ok || !json) continue;
         for (const r of json.results || []) {
           const name = String(r.title ?? r.name ?? "");
-          if (!titleMatches(candidate, name)) continue;
+          const rd = r.release_date || r.first_air_date;
+          const resultYear = rd ? parseInt(String(rd).slice(0, 4), 10) : null;
+          if (!titleMatches(candidate, name, parsed.year, resultYear)) continue;
           return {
             tmdbId: r.id as number,
             type: (mediaType === "movie" ? "movie" : "series") as MediaType,
@@ -514,9 +529,22 @@ async function extractVidmoly(inputUrl: string, pageUrl?: string): Promise<strin
 async function extractStreamtape(inputUrl: string, pageUrl?: string, cookieJar?: { value: string }): Promise<string | null> {
   const embedId = (inputUrl.match(/(?:streamtape\.com)\/(?:e|v|embed)\/([A-Za-z0-9]+)/i) || [])[1]
     || (pageUrl ? (pageUrl.match(/(?:streamtape\.com)\/(?:e|v|embed)\/([A-Za-z0-9]+)/i) || [])[1] : null);
-  const resolvedPage = embedId ? `https://streamtape.com/e/${embedId}` : pageUrl || inputUrl;
-  const pageRes = await fetchTextHeaders(resolvedPage, { Referer: "https://streamtape.com/", Origin: "https://streamtape.com" });
-  const { ok, status, text } = pageRes;
+  const pageUrls = embedId
+    ? [
+        `https://streamtape.com/e/${embedId}`,
+        `https://stape.io/e/${embedId}`,
+        `https://streamtape.com/v/${embedId}`,
+      ]
+    : [pageUrl || inputUrl];
+  let pageRes: any = null;
+  let resolvedPage = pageUrls[0];
+  let ok = false, status = 0, text = "";
+  for (const u of pageUrls) {
+    const r = await fetchTextHeaders(u, { Referer: "https://streamtape.com/", Origin: "https://streamtape.com" });
+    pageRes = r;
+    if (r.ok) { resolvedPage = u; ok = true; text = r.text; break; }
+    status = r.status;
+  }
   if (cookieJar) {
     try {
       const sc = pageRes.headers.getSetCookie?.() ?? [];
@@ -631,8 +659,8 @@ async function listUfoloadUploads(env: Env): Promise<any[]> {
       const { ok, json } = await fetchJson("https://ufoload.com/api/v1/files?status=ready&limit=100&offset=" + offset, {
         Authorization: "Bearer " + key,
       });
-      if (!ok || !json?.items) break;
-      const items: any[] = json.items;
+      if (!ok || !json) break;
+      const items: any[] = json.items || json.files || json?.result?.files || json?.data?.files || [];
       if (items.length === 0) break;
       for (const f of items) {
         const fid = String(f.id || "");
