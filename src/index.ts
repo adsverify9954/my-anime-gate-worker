@@ -1070,12 +1070,17 @@ async function listStreamtape(env: Env) {
   const root = await call();
   if (!root) return [];
   collect(root);
-  // folders (max 20) — budget limit ke liye cap
-  for (const folder of (root?.result?.folders || []).slice(0, 20)) {
-    const fid = folder?.id;
-    if (!fid) continue;
-    const j = await call(String(fid));
-    if (j) collect(j);
+  // 2 folders per run — minute ke hisaab se rotate (free-tier subrequest limit)
+  const folders: any[] = root?.result?.folders || [];
+  if (folders.length) {
+    const start = new Date().getUTCMinutes() % folders.length;
+    for (let i = 0; i < Math.min(2, folders.length); i++) {
+      const folder = folders[(start + i) % folders.length];
+      const fid = folder?.id;
+      if (!fid) continue;
+      const j = await call(String(fid));
+      if (j) collect(j);
+    }
   }
   return out;
 }
