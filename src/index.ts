@@ -2948,4 +2948,72 @@ app.get("/proxy", async (c) => {
   }
 });
 
+
+// --------------------------------------------------- TMDB-friendly file rename
+// GET /debug/names?host=streamtape|ufoload|all&apply=1&limit=20
+// Default dry-run. apply=1 → host API se file ka naam tmdb_<ID>_<title>.mp4 karta hai.
+app.get("/debug/names", async (c) => {
+  const host = (c.req.query("host") || "all").toLowerCase();
+  const apply = c.req.query("apply") === "1";
+  const limit = Math.min(parseInt(c.req.query("limit") || "20", 10) || 20, 50);
+  const jobs: any[] = [];
+  try {
+    if (host === "all" || host === "streamtape") {
+      jobs.push(...(await listStreamtape(c.env)).map((f: any) => ({ ...f, host: "streamtape" })));
+    }
+    if (host === "all" || host === "ufoload") {
+      jobs.push(...(await listUfoloadUploads(c.env)).map((f: any) => ({ ...f, host: "ufoload" })));
+    }
+  } catch (e: any) {
+    return c.json({ ok: false, error: String(e?.message ?? e) }, 500, GATE_RESOLVE_CORS as any);
+  }
+
+  const results: any[] = [];
+  for (const f of jobs.slice(0, limit)) {
+    const parsed = parseFilename(String(f.fileName || ""));
+    const m = await tmdbMatch(c.env, parsed);
+    if (!m) {
+      results.push({ host: f.host, id: f.id, old: f.fileName, match: null, renamed: false });
+      continue;
+    }
+    const title = String(m.title || "")
+      .replace(/[^a-zA-Z0-9 ]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const ep = parsed.season != null
+      ? `_S${String(parsed.season).padStart(2, "0")}E${String(parsed.episode ?? 1).padStart(2, "0")}`
+      : "";
+    const newName = `tmdb_${m.tmdbId}_${title || "Movie"}${ep}.mp4`;
+    let renamed = false, error = "";
+    if (apply) {
+      try {
+        if (f.host === "streamtape") {
+          const login = c.env.STREAMTAPE_USER || c.env.STREAMTAPE_LOGIN || "";
+          const r = await fetchJson(
+            `https://api.streamtape.com/file/rename?login=${encodeURIComponent(login)}&key=${encodeURIComponent(c.env.STREAMTAPE_KEY || "")}&id=${encodeURIComponent(f.id)}&name=${encodeURIComponent(newName)}`,
+          );
+          renamed = !!r.ok && r.json?.status === 200;
+          if (!renamed) error = JSON.stringify(r.json || r.text || {}).slice(0, 140);
+        } else {
+          const fid = String(f.id || "").replace(/^ufo_/, "");
+          const key = c.env.UFOLOAD_API_KEY || c.env.UFOLOAD_KEY || "";
+          for (const body of [{ name: newName }, { title: newName }]) {
+            const r = await fetch(`https://ufoload.com/api/v1/files/${fid}`, {
+              method: "PATCH",
+              headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            if (r.ok) { renamed = true; break; }
+            error = `HTTP ${r.status}`;
+          }
+        }
+      } catch (e: any) {
+        error = String(e?.message ?? e).slice(0, 140);
+      }
+    }
+    results.push({ host: f.host, id: f.id, old: f.fileName, new: newName, tmdbId: m.tmdbId, renamed, error });
+  }
+  return c.json({ ok: true, apply, scanned: jobs.length, results }, 200, GATE_RESOLVE_CORS as any);
+});
+
 export default app;
