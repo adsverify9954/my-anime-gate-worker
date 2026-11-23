@@ -1522,7 +1522,7 @@ async function runSync(env: Env): Promise<number> {
       ready = valid;
       if (ready) {
         budget--;
-        try { directUrl = await extractStreamtape(upload.pageUrl); } catch (e) { directUrl = null; lastSyncErrors.push("streamtape: " + String(e).slice(0, 120)); }
+        try { directUrl = await extractStreamtape(upload.pageUrl); } catch (e) { directUrl = null; const es = String(e); if (!/404/i.test(es)) lastSyncErrors.push("streamtape: " + es.slice(0, 120)); }
       }
   } else if (upload.host === "abyss" || upload.host === "byse" || upload.host === "ufoload" || upload.host === "earnvids") {
     valid = Boolean(upload.pageUrl);
