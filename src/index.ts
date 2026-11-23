@@ -1036,17 +1036,45 @@ async function extractUfoload(inputUrl: string, pageUrl?: string): Promise<strin
 async function listStreamtape(env: Env) {
   const login = env.STREAMTAPE_USER || env.STREAMTAPE_LOGIN;
   if (!login || !env.STREAMTAPE_KEY) return [];
-  let ok = false, json: any = null;
-  for (const api of ["https://api.streamtape.com/file/list", "https://api.streamtape.to/file/list"]) {
-    const r = await fetchJson(`${api}?login=${encodeURIComponent(login)}&key=${encodeURIComponent(env.STREAMTAPE_KEY)}`, { Referer: "https://streamtape.com/" });
-    if (r.ok && r.json) { ok = true; json = r.json; break; }
-    if (r.status === 404) continue;
+  const out: any[] = [];
+  const seen = new Set<string>();
+
+  const call = async (folder?: string): Promise<any> => {
+    for (const api of ["https://api.streamtape.com/file/listfolder", "https://api.streamtape.to/file/listfolder"]) {
+      const qs = `login=${encodeURIComponent(login)}&key=${encodeURIComponent(env.STREAMTAPE_KEY || "")}`;
+      const r = await fetchJson(`${api}?${qs}${folder ? "&folder=" + encodeURIComponent(folder) : ""}`, { Referer: "https://streamtape.com/" });
+      if (r.ok && r.json?.status === 200) return r.json;
+    }
+    return null;
+  };
+
+  const collect = (json: any) => {
+    for (const f of (json?.result?.files || [])) {
+      const fid = String(f.linkid || f.id || "");
+      if (!fid || seen.has(fid)) continue;
+      seen.add(fid);
+      out.push({
+        id: fid,
+        host: "streamtape",
+        fileName: String(f.name || f.file_name || ""),
+        size: Number(f.size) || 0,
+        status: 200,
+        pageUrl: String(f.link || `https://streamtape.com/v/${fid}`),
+      });
+    }
+  };
+
+  const root = await call();
+  if (!root) return [];
+  collect(root);
+  // folders (max 20) — budget limit ke liye cap
+  for (const folder of (root?.result?.folders || []).slice(0, 20)) {
+    const fid = folder?.id;
+    if (!fid) continue;
+    const j = await call(String(fid));
+    if (j) collect(j);
   }
-  if (!ok || json?.status !== 200) return [];
-  return (json?.result?.files || []).map((f: any) => ({
-    id: String(f.id), host: "streamtape", fileName: String(f.file_name || f.name || ""),
-    size: Number(f.size) || 0, status: Number(f.status), pageUrl: f.link || `https://streamtape.com/v/${f.id}`,
-  }));
+  return out;
 }
 
 function parseUploadsJson(env: Env) {
