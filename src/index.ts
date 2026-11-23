@@ -2755,6 +2755,11 @@ app.get("/resolve", async (c) => {
   }
   try {
     const headers = gateHeadersForTarget(target);
+    const wantProxy = c.req.query("proxy") === "1";
+    const gateWrap = (raw: string) => {
+      if (!wantProxy) return raw;
+      return `${new URL(c.req.url).origin}/proxy?url=${encodeURIComponent(raw)}`;
+    };
 
     // Best video server pehle: known host ke liye host-specific resolver chalao
     const hname = target.hostname.toLowerCase();
@@ -2774,7 +2779,7 @@ app.get("/resolve", async (c) => {
       return c.json(
         {
           ok: true,
-          url: hostDirect,
+          url: gateWrap(hostDirect),
           type: /\.m3u8/i.test(hostDirect) ? "m3u8" : "mp4",
           headers: gateHeadersForTarget(new URL(hostDirect)),
           source: "The Gate",
@@ -2807,7 +2812,7 @@ app.get("/resolve", async (c) => {
       return c.json(
         {
           ok: true,
-          url: best.url,
+          url: gateWrap(best.url),
           type: best.url.includes(".m3u8") ? "m3u8" : "mp4",
           headers,
           source: "The Gate",
@@ -2824,7 +2829,7 @@ app.get("/resolve", async (c) => {
     const type =
       ct.includes("mpegurl") || finalUrl.includes(".m3u8") ? "m3u8" : "mp4";
     return c.json(
-      { ok: true, url: finalUrl, type, headers, source: "The Gate", via: "direct" },
+      { ok: true, url: gateWrap(finalUrl), type, headers, source: "The Gate", via: "direct" },
       200,
       GATE_RESOLVE_CORS as any,
     );
@@ -2845,6 +2850,30 @@ app.get("/proxy", async (c) => {
     const range = c.req.header("Range");
     if (range) headers["Range"] = range;
     const res = await fetch(target.href, { headers, redirect: "follow" });
+    const ct = (res.headers.get("content-type") || "").toLowerCase();
+    if (ct.includes("mpegurl") || /\.m3u8(?:\?|$)/i.test(target.pathname)) {
+      const origin = new URL(c.req.url).origin;
+      const px = (u: string) => {
+        try {
+          const abs = new URL(u, res.url || target.href).href;
+          if (abs.includes("/proxy?url=")) return abs;
+          return `${origin}/proxy?url=${encodeURIComponent(abs)}`;
+        } catch { return u; }
+      };
+      const playlist = await res.text();
+      const rewritten = playlist.split(/\r?\n/).map((line) => {
+        const t = line.trim();
+        if (!t) return line;
+        if (t.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_m, u) => `URI="${px(u)}"`);
+        return px(t);
+      }).join("\n");
+      const hlsHeaders = new Headers();
+      const hct = res.headers.get("content-type");
+      if (hct) hlsHeaders.set("content-type", hct);
+      hlsHeaders.set("Access-Control-Allow-Origin", "*");
+      hlsHeaders.set("Cache-Control", "no-store");
+      return new Response(rewritten, { status: res.status, headers: hlsHeaders });
+    }
     const out = new Headers();
     for (const k of [
       "content-type", "content-length", "accept-ranges",
