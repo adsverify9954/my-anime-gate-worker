@@ -1371,7 +1371,7 @@ async function runSync(env: Env): Promise<number> {
   // Listing cache (2 min): har sync me 6 hosts list karne se ~25 subrequests + 10s sleep
   // lagta hai (free plan ka 50-subrequest limit tight ho jaata hai). Cache se repeat
   // sync ~1s me hota hai; naye upload 2-5 min me pakde jaate hain.
-  const LISTING_CACHE_MS = 2 * 60 * 1000;
+  const LISTING_CACHE_MS = 10 * 60 * 1000;
   const uploads: any[] = [];
   let listingFromCache = false;
   try {
