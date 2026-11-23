@@ -319,7 +319,7 @@ function parseFilename(fileName: string) {
     // release tags: bracket groups (release groups / audio labels), quality, codecs
     .replace(/\[[^\]]*\]/g, " ")
     .replace(/_[^_]*_(?=\s|$)/g, " ")
-    .replace(/\b(480p|720p|1080p|2160p|4k|WEB-?DL|WEB-?Rip|WEB|BluRay|BDRip|BRRip|HDRip|CAM|TS|REMUX|DVD|x26[45]|HEVC|H\.?26[45]|AVC|AAC\s?2\s?0|Multi\s?Audio|ESub|ESubs|Subbed|Dubbed|Dual|Multi|HDR10\+?|10bit|AnimeDubHindi|Anime\s?Dub\s?Hindi|HindiDub|PROPER|REPACK|AMZN|NF|DNP|UNCUT|CBFC|ORG)\b/gi, " ")
+    .replace(/\b(480p|720p|1080p|2160p|4k|WEB-?DL|WEB-?Rip|WEB|BluRay|BDRip|BRRip|HDRip|CAM|TS|REMUX|DVD|x26[45]|HEVC|H\.?26[45]|AVC|AAC\s?2\s?0|Multi\s?Audio|ESub|ESubs|Subbed|Dubbed|Dual|Multi|HDR10\+?|10bit|AnimeDubHindi|Anime\s?Dub\s?Hindi|HindiDub|PROPER|REPACK|AMZN|NF|DNP|UNCUT|CBFC|ORG|HDTC|HDTV|PDTV|HC-?ESubs?|JioHotstar)\b/gi, " ")
     .replace(/\b(Hindi|Tamil|Telugu|English|Malayalam|Kannada|Bengali|Polish|Spanish|French|Russian|Arabic|Korean|Japanese|Chinese|Portuguese|Italian|German|Turkish|Indonesian|Thai|Vietnamese)(?:[-\s]+(?:Hindi|Tamil|Telugu|English|Malayalam|Kannada|Bengali|Polish|Spanish|French|Russian|Arabic|Korean|Japanese|Chinese|Portuguese|Italian|German|Turkish|Indonesian|Thai|Vietnamese))*[-\s]?/gi, " ")
     .replace(/[._]+/g, " ")
     .replace(/\s+/g, " ")
@@ -344,7 +344,7 @@ function parseFilename(fileName: string) {
   const title = clean
     .replace(/[Ss]\d+[_\s\-]?[Ee]\d+/i, "")
     .replace(/\(\d{4}\)|\.?19\d{2}|\.?20\d{2}/g, "")
-    .replace(/\.?1080p|\.?720p|\.?4k|\.?WEB-?DL|\.?BluRay|\.?x26[45]|\.?HEVC|\.?AAC|\.?H\.?264|\.?H\.?265|\.?AVC|\.?MP4|\.?MKV|\.?ESubs?/gi, " ")
+    .replace(/\.?1080p|\.?720p|\.?4k|\.?WEB-?DL|\.?BluRay|\.?x26[45]|\.?HEVC|\.?AAC|\.?H\.?264|\.?H\.?265|\.?AVC|\.?MP4|\.?MKV|\.?ESubs?|\.?HDTC|\.?JioHotstar|\.?HC-?ESubs?/gi, " ")
     .replace(/(?:Hindi|Tamil|Telugu|English|Malayalam|Kannada|Bengali)(?:[-\s]+(?:Hindi|Tamil|Telugu|English|Malayalam|Kannada|Bengali))*/gi, " ")
     .replace(/[._]+/g, " ")
     .replace(/\s+/g, " ")
