@@ -582,6 +582,9 @@ async function extractStreamtape(inputUrl: string, pageUrl?: string, cookieJar?:
   if (!ok) throw new Error(`Streamtape HTTP ${status}`);
   const signed = text.match(/https?:[^'"]*\/get_video\?[^'"]*/i);
   if (signed) return signed[0];
+  // Streamtape ab link ko "/streamtape.com/get_video?..." (protocol-less) format me deta hai
+  const relSigned = text.match(/(\/streamtape\.com\/get_video\?[^"'<>\s]+)/i);
+  if (relSigned) return fixRel(relSigned[1]);
   // REAL link is built by JS: robotlink.innerHTML = 'BASE' + ('STR').substring(A).substring(B)...
   // (the static div content is a decoy token). Parse + evaluate the LAST assignment.
   const exprRe = /getElementById\(['"]robotlink['"]\)\.innerHTML\s*=\s*['"]([^'"]*)['"]\s*\+\s*\('([^']*)'\)((?:\.substring\(\d+\))+)/g;
