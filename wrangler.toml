@@ -8,7 +8,7 @@ database_name = "anime-db"
 database_id = "aeb45760-6f5d-488a-aecd-2532fca0561a"
 
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["* * * * *"]
 
 [vars]
 ADDON_NAME = "The Gate"
