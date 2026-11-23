@@ -3025,4 +3025,14 @@ app.get("/debug/uploads", async (c) => {
   return c.json({ ok: true, uploads: raw.map((f: any) => ({ host: f.host, id: f.id, fileName: f.fileName, pageUrl: f.pageUrl })) }, 200, GATE_RESOLVE_CORS as any);
 });
 
+
+app.get("/debug/runsync", async (c) => {
+  try {
+    const n = await runSync(c.env);
+    return c.json({ ok: true, ingested: n, errors: lastSyncErrors.slice(0, 20) }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) {
+    return c.json({ ok: false, error: String(e?.stack || e).slice(0, 600) }, 500, GATE_RESOLVE_CORS as any);
+  }
+});
+
 export default app;
