@@ -2838,6 +2838,10 @@ function gateFindBestMediaUrl(html: string, base: URL): { url: string; score: nu
     const v = m[1];
     try { found.add(v.startsWith("http") ? v : new URL(v, base).href); } catch { /* ignore */ }
   }
+  // Streamtape protocol-less get_video links (host resolver fail hone par bhi pakde gaye)
+  for (const m of clean.matchAll(/(\/streamtape\.com\/get_video\?[^"'<>\s]+)/gi)) {
+    found.add("https://" + m[1].replace(/^\//, ""));
+  }
   if (!found.size) return null;
   const ranked = [...found]
     .map((u) => ({ url: u, score: gateScoreMediaUrl(u) }))
