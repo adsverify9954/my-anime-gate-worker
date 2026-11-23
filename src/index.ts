@@ -3006,11 +3006,16 @@ app.get("/debug/names", async (c) => {
     return c.json({ ok: false, error: String(e?.message ?? e) }, 500, GATE_RESOLVE_CORS as any);
   }
 
-  const allJobs = skipRenamed ? jobs.filter((f: any) => !/^tmdb_\d+_/i.test(String(f.fileName || ""))) : jobs;
+  let allJobs = skipRenamed ? jobs.filter((f: any) => !/^tmdb_\d+_/i.test(String(f.fileName || ""))) : jobs;
+  const q = (c.req.query("q") || "").toLowerCase();
+  if (q) allJobs = allJobs.filter((f: any) => String(f.fileName || "").toLowerCase().includes(q));
+  const forceId = parseInt(c.req.query("forceId") || "0", 10) || 0;
   const results: any[] = [];
   for (const f of allJobs.slice(offset, offset + limit)) {
     const parsed = parseFilename(String(f.fileName || ""));
-    const m = await tmdbMatch(c.env, parsed);
+    const m = forceId
+      ? { tmdbId: forceId, title: parsed.title || q || "Movie", type: "movie" }
+      : await tmdbMatch(c.env, parsed);
     if (!m) {
       results.push({ host: f.host, id: f.id, old: f.fileName, match: null, renamed: false });
       continue;
