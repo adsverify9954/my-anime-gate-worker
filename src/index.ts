@@ -1466,7 +1466,7 @@ async function runSync(env: Env): Promise<number> {
   let ingested = 0;
   let processedThisRun = 0;
   // Per-run processing cap (subrequest limit safety) + TMDB/extractor call budget.
-  const MAX_PROCESSED_PER_RUN = 8;
+  const MAX_PROCESSED_PER_RUN = 3;
   const stmts: any[] = [];
   // Naye upload ka pageUrl marker \u2192 agli sync me dobara extract/TMDB call nahi.
   // Value = "<rowId>|<fileRef>" \u2014 file ref se pata chalta hai ki ye file pehle se
