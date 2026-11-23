@@ -557,7 +557,25 @@ async function extractVidmoly(inputUrl: string, pageUrl?: string): Promise<strin
   return resolveUrl(embedUrl, (hls as RegExpMatchArray)[1]);
 }
 
-async function extractStreamtape(inputUrl: string, pageUrl?: string, cookieJar?: { value: string }): Promise<string | null> {
+/** Streamtape official API → dlticket + dl → direct CDN URL (bot-check se bachne ke liye) */
+async function streamtapeApiDirect(env: Env, fileId: string): Promise<string | null> {
+  const login = env.STREAMTAPE_USER || env.STREAMTAPE_LOGIN;
+  const key = env.STREAMTAPE_KEY;
+  if (!login || !key || !/^[A-Za-z0-9]+$/.test(fileId)) return null;
+  const tk = await fetchJson(`https://api.streamtape.com/file/dlticket?file=${encodeURIComponent(fileId)}&login=${encodeURIComponent(login)}&key=${encodeURIComponent(key)}`);
+  const ticket = tk.json?.result?.ticket;
+  if (!ticket) return null;
+  for (let i = 0; i < 5; i++) {
+    const dl = await fetchJson(`https://api.streamtape.com/file/dl?file=${encodeURIComponent(fileId)}&ticket=${encodeURIComponent(ticket)}`);
+    const url = dl.json?.result?.url;
+    if (url) return String(url);
+    if (/wait/i.test(String(dl.json?.msg || ""))) { await new Promise((r) => setTimeout(r, 2000)); continue; }
+    break;
+  }
+  return null;
+}
+
+async function extractStreamtape(inputUrl: string, pageUrl?: string, cookieJar?: { value: string }, env?: Env): Promise<string | null> {
   const embedId = (inputUrl.match(/(?:streamtape\.com)\/(?:e|v|embed)\/([A-Za-z0-9]+)/i) || [])[1]
     || (pageUrl ? (pageUrl.match(/(?:streamtape\.com)\/(?:e|v|embed)\/([A-Za-z0-9]+)/i) || [])[1] : null);
   const pageUrls = embedId
@@ -567,6 +585,13 @@ async function extractStreamtape(inputUrl: string, pageUrl?: string, cookieJar?:
         `https://streamtape.com/v/${embedId}`,
       ]
     : [pageUrl || inputUrl];
+  // API-first: official dlticket/dl direct URL (page scraping bot-check se bachta hai)
+  if (embedId && env) {
+    try {
+      const apiDirect = await streamtapeApiDirect(env, embedId);
+      if (apiDirect) return apiDirect;
+    } catch { /* API fail -> page fallback */ }
+  }
   let pageRes: any = null;
   let resolvedPage = pageUrls[0];
   let ok = false, status = 0, text = "";
@@ -1561,7 +1586,7 @@ async function runSync(env: Env): Promise<number> {
       ready = valid;
       if (ready) {
         budget--;
-        try { directUrl = await extractStreamtape(upload.pageUrl); } catch (e) { directUrl = null; const es = String(e); if (!/404|no robotlink/i.test(es)) lastSyncErrors.push("streamtape: " + es.slice(0, 120)); }
+        try { directUrl = await extractStreamtape(upload.pageUrl, undefined, undefined, env); } catch (e) { directUrl = null; const es = String(e); if (!/404|no robotlink/i.test(es)) lastSyncErrors.push("streamtape: " + es.slice(0, 120)); }
       }
   } else if (upload.host === "abyss" || upload.host === "byse" || upload.host === "ufoload" || upload.host === "earnvids") {
     valid = Boolean(upload.pageUrl);
@@ -2299,7 +2324,7 @@ app.get("/proxy/st/:embedId", async (c) => {
   let stCookies = "";
   try {
     const jar = { value: "" };
-    direct = await extractStreamtape("https://streamtape.com/e/" + embedId + "/", undefined, jar);
+    direct = await extractStreamtape("https://streamtape.com/e/" + embedId + "/", undefined, jar, c.env);
     stCookies = jar.value;
   } catch {
     direct = null;
@@ -2867,7 +2892,7 @@ app.get("/resolve", async (c) => {
     let hostDirect: string | null = null;
     let via = "";
     try {
-      if (/streamtape/i.test(hname)) { hostDirect = await extractStreamtape(target.href); via = "streamtape"; }
+      if (/streamtape/i.test(hname)) { hostDirect = await extractStreamtape(target.href, undefined, undefined, c.env); via = "streamtape"; }
       else if (/mixdrop|mxdrop/i.test(hname)) { hostDirect = await extractMixdrop(target.href); via = "mixdrop"; }
       else if (/vidmoly/i.test(hname)) { hostDirect = await extractVidmoly(target.href); via = "vidmoly"; }
       else if (/ufoload/i.test(hname)) { hostDirect = await extractUfoload(target.href); via = "ufoload"; }
