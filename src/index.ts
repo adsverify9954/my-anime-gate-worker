@@ -2703,23 +2703,49 @@ function gateHeadersForTarget(target: URL): Record<string, string> {
   };
 }
 
-function gateFindMediaUrl(html: string, base: URL): string | null {
+// Best video server ranking — HLS > MP4, known-good hosts > unknown, https > http
+const GATE_HOST_SCORES: Array<[RegExp, number]> = [
+  [/stream\.andromedans\.live/i, 100],
+  [/(?:^|\.)ufoload\./i, 90],
+  [/(?:^|\.)streamtape\./i, 85],
+  [/(?:^|\.)(?:mixdrop|mxdrop)\./i, 80],
+  [/(?:^|\.)vidmoly\./i, 75],
+  [/(?:^|\.)(?:doodstream|dood)\./i, 70],
+];
+
+function gateScoreMediaUrl(u: string): number {
+  let score = /\.m3u8(?:\?|$)/i.test(u) ? 40 : 10;
+  if (/^https:/i.test(u)) score += 15;
+  try {
+    const h = new URL(u).hostname.toLowerCase();
+    for (const [re, pts] of GATE_HOST_SCORES) {
+      if (re.test(h)) { score += pts; break; }
+    }
+    if (/(1080|720|hdr)/i.test(u)) score += 5;
+  } catch { /* ignore malformed */ }
+  return score;
+}
+
+function gateFindBestMediaUrl(html: string, base: URL): { url: string; score: number; count: number } | null {
   const clean = html
     .replace(/\\u002F/gi, "/")
     .replace(/\\\//g, "/")
     .replace(/&amp;/gi, "&");
-  const direct = clean.match(
-    /https?:\/\/[^\s"'<>]+?\.(?:m3u8|mp4)(?:\?[^\s"'<>]*)?/i,
-  );
-  if (direct) return direct[0];
-  const quoted = clean.match(
-    /(?:get_video_url|video_url|file|url|src)\s*[:=]\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']/i,
-  );
-  if (quoted) {
-    const v = quoted[1];
-    return v.startsWith("http") ? v : new URL(v, base).href;
+  const found = new Set<string>();
+  for (const m of clean.matchAll(/https?:\/\/[^\s"'<>]+?\.(?:m3u8|mp4)(?:\?[^\s"'<>]*)?/gi)) {
+    found.add(m[0]);
   }
-  return null;
+  for (const m of clean.matchAll(
+    /(?:get_video_url|video_url|file|url|src)\s*[:=]\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']/gi,
+  )) {
+    const v = m[1];
+    try { found.add(v.startsWith("http") ? v : new URL(v, base).href); } catch { /* ignore */ }
+  }
+  if (!found.size) return null;
+  const ranked = [...found]
+    .map((u) => ({ url: u, score: gateScoreMediaUrl(u) }))
+    .sort((a, b) => b.score - a.score);
+  return { url: ranked[0].url, score: ranked[0].score, count: found.size };
 }
 
 app.get("/resolve", async (c) => {
@@ -2729,6 +2755,37 @@ app.get("/resolve", async (c) => {
   }
   try {
     const headers = gateHeadersForTarget(target);
+
+    // Best video server pehle: known host ke liye host-specific resolver chalao
+    const hname = target.hostname.toLowerCase();
+    let hostDirect: string | null = null;
+    let via = "";
+    try {
+      if (/streamtape/i.test(hname)) { hostDirect = await extractStreamtape(target.href); via = "streamtape"; }
+      else if (/mixdrop|mxdrop/i.test(hname)) { hostDirect = await extractMixdrop(target.href); via = "mixdrop"; }
+      else if (/vidmoly/i.test(hname)) { hostDirect = await extractVidmoly(target.href); via = "vidmoly"; }
+      else if (/ufoload/i.test(hname)) { hostDirect = await extractUfoload(target.href); via = "ufoload"; }
+      else if (/dood/i.test(hname)) {
+        const code = (target.pathname.match(/\/(?:e|d|file)\/([A-Za-z0-9]+)/i) || [])[1];
+        if (code) { hostDirect = await extractDoodstreamEmbed(c.env, code, target.origin); via = "doodstream"; }
+      }
+    } catch { /* host resolver fail -> generic fallback */ }
+    if (hostDirect) {
+      return c.json(
+        {
+          ok: true,
+          url: hostDirect,
+          type: /\.m3u8/i.test(hostDirect) ? "m3u8" : "mp4",
+          headers: gateHeadersForTarget(new URL(hostDirect)),
+          source: "The Gate",
+          via,
+          chosen: "best-known-host",
+        },
+        200,
+        GATE_RESOLVE_CORS as any,
+      );
+    }
+
     const res = await fetch(target.href, {
       headers,
       redirect: "follow",
@@ -2739,8 +2796,8 @@ app.get("/resolve", async (c) => {
 
     if (ct.includes("html") || ct.includes("text")) {
       const html = await res.text();
-      const media = gateFindMediaUrl(html, new URL(finalUrl));
-      if (!media) {
+      const best = gateFindBestMediaUrl(html, new URL(finalUrl));
+      if (!best) {
         return c.json(
           { ok: false, error: "no media link found in page", host: target.hostname },
           422,
@@ -2750,11 +2807,14 @@ app.get("/resolve", async (c) => {
       return c.json(
         {
           ok: true,
-          url: media,
-          type: media.includes(".m3u8") ? "m3u8" : "mp4",
+          url: best.url,
+          type: best.url.includes(".m3u8") ? "m3u8" : "mp4",
           headers,
           source: "The Gate",
           via: "extract",
+          chosen: "best-ranked",
+          servers: best.count,
+          score: best.score,
         },
         200,
         GATE_RESOLVE_CORS as any,
