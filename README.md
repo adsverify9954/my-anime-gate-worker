@@ -41,3 +41,7 @@ Expected: `{"ok":true,"url":"...","type":"m3u8","source":"The Gate",...}`
 ## Future updates
 
 Bas `src/index.ts` edit karke push karo — Cloudflare khud auto-deploy kar dega.
+
+
+---
+CloudStream link support: /resolve?url=... + /proxy?url=... enabled. Deploy trigger 2026-11-23.
