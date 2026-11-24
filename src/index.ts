@@ -3138,15 +3138,29 @@ app.get("/debug/fetch", async (c) => {
 
 // Streamtape: resolve + stream in ONE invocation (download links are IP-locked & short-lived)
 app.get("/gate/st/:id", async (c) => {
-  const id = c.req.param("id") || "";
-  if (!/^[A-Za-z0-9]+$/.test(id)) return c.text("bad id", 400);
+  const id = (c.req.param("id") || "").replace(/[^A-Za-z0-9]/g, "");
+  const login = c.env.STREAMTAPE_USER || c.env.STREAMTAPE_LOGIN || "";
+  const key = c.env.STREAMTAPE_KEY || "";
+  if (!id || !login || !key) return c.text("bad config", 500);
   try {
-    const direct = await streamtapeApiDirect(c.env, id);
-    if (!direct) return c.text("resolve failed", 502);
-    const headers: Record<string,string> = { "User-Agent": GATE_RESOLVE_UA, Referer: "https://streamtape.com/" };
+    let direct: string | null = null, lastMsg = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const tk = await fetchJson(`https://api.streamtape.com/file/dlticket?file=${id}&login=${encodeURIComponent(login)}&key=${encodeURIComponent(key)}`);
+      const ticket = tk.json?.result?.ticket;
+      if (!ticket) { lastMsg = "ticket: " + String(tk.json?.msg || "none"); break; }
+      const wait = Math.min(Number(tk.json?.result?.wait_time || 5), 8);
+      await new Promise((r) => setTimeout(r, (wait + 1) * 1000));
+      const dl = await fetchJson(`https://api.streamtape.com/file/dl?file=${id}&ticket=${encodeURIComponent(ticket)}`);
+      direct = dl.json?.result?.url || null;
+      if (direct) break;
+      lastMsg = "dl: " + String(dl.json?.msg || "none");
+    }
+    if (!direct) return c.text("resolve: " + lastMsg, 502);
     const range = c.req.header("Range");
+    const headers: Record<string,string> = { "User-Agent": GATE_RESOLVE_UA, Referer: "https://streamtape.com/" };
     if (range) headers["Range"] = range;
     const res = await fetch(direct, { headers, redirect: "follow" });
+    if (!res.ok && res.status !== 206) return c.text("upstream " + res.status, 502);
     const out = new Headers();
     for (const k of ["content-type","content-length","accept-ranges","content-range","etag"]) {
       const v = res.headers.get(k); if (v) out.set(k, v);
@@ -3154,9 +3168,7 @@ app.get("/gate/st/:id", async (c) => {
     out.set("Access-Control-Allow-Origin", "*");
     out.set("Cache-Control", "no-store");
     return new Response(res.body, { status: res.status, headers: out });
-  } catch (e: any) {
-    return c.text("upstream " + String(e?.message ?? e).slice(0, 50), 502);
-  }
+  } catch (e: any) { return c.text("error " + String(e?.message ?? e).slice(0, 80), 502); }
 });
 
 
