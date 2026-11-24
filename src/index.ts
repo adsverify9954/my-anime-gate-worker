@@ -3149,4 +3149,27 @@ app.get("/gate/st/:id", async (c) => {
   }
 });
 
+
+app.get("/debug/rename", async (c) => {
+  const host = c.req.query("host") || "";
+  const id = (c.req.query("id") || "").replace(/^ufo_/, "");
+  const name = c.req.query("name") || "";
+  if (host !== "ufoload" || !id || !name) return c.json({ ok:false, error:"host=ufoload&id=&name= required" }, 400);
+  const key = c.env.UFOLOAD_API_KEY || c.env.UFOLOAD_KEY || "";
+  if (!key) return c.json({ ok:false, error:"no key" }, 500);
+  try {
+    let ok = false, status = 0;
+    for (const body of [{ name }, { title: name }]) {
+      const r = await fetch(`https://ufoload.com/api/v1/files/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      status = r.status;
+      if (r.ok) { ok = true; break; }
+    }
+    return c.json({ ok, status, id, name }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,150) }, 500); }
+});
+
 export default app;
