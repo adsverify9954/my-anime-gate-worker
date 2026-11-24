@@ -1402,10 +1402,12 @@ async function runSync(env: Env): Promise<number> {
   const LISTING_CACHE_MS = 10 * 60 * 1000;
   const uploads: any[] = [];
   let listingFromCache = false;
+  let syncCursor = 0;
   try {
     const cacheRows = await db.prepare("SELECT key, value FROM sync_state WHERE key IN ('uploads_cache','uploads_cache_at','sync_cursor')").all<any>();
     const cm = new Map<string, string>();
     for (const r of (cacheRows.results || [])) cm.set(String(r.key), String(r.value));
+    syncCursor = parseInt(cm.get("sync_cursor") || "0", 10) || 0;
     const at = Date.parse(cm.get("uploads_cache_at") || "");
     if (cm.has("uploads_cache") && Number.isFinite(at) && Date.now() - at < LISTING_CACHE_MS) {
       const cached = JSON.parse(cm.get("uploads_cache") || "[]");
@@ -1511,7 +1513,6 @@ async function runSync(env: Env): Promise<number> {
 
   // Rotating cursor: har run alag uploads se shuru taaki baaki hosts (ufoload waghera)
   // bhi process hon — warna pehle 3 hi baar baar pakde jate hain.
-  let syncCursor = parseInt(cm.get("sync_cursor") || "0", 10) || 0;
   if (uploads.length) syncCursor = syncCursor % uploads.length;
   const rotatedUploads = uploads.length ? [...uploads.slice(syncCursor), ...uploads.slice(0, syncCursor)] : uploads;
   for (const upload of rotatedUploads) {
