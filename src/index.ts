@@ -3329,4 +3329,19 @@ app.get("/stx/:id", async (c) => {
   } catch (e: any) { return c.text("error " + String(e?.message ?? e).slice(0, 60), 502); }
 });
 
+
+app.get("/debug/mxtest", async (c) => {
+  const E = encodeURIComponent(c.env.MIXDROP_EMAIL || "");
+  const K = encodeURIComponent(c.env.MIXDROP_KEY || "");
+  const out: any[] = [];
+  for (const host of ["api.mixdrop.ag", "api.mixdrop.co", "api.mixdrop.to", "api.mixdrop.ws", "api.mxdrop.click"]) {
+    try {
+      const r = await fetch(`https://${host}/folderlist?email=${E}&key=${K}&id=0&page=1`, { signal: AbortSignal.timeout(12000) });
+      const t = await r.text();
+      out.push({ host, status: r.status, body: t.slice(0, 120) });
+    } catch (e: any) { out.push({ host, error: String(e?.message ?? e).slice(0, 60) }); }
+  }
+  return c.json({ ok: true, results: out }, 200, GATE_RESOLVE_CORS as any);
+});
+
 export default app;
