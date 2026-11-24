@@ -1312,7 +1312,9 @@ async function listMixdropUploads(env: Env, db: D1Database, cache: Map<string, n
   const out: any[] = [];
 
   const root = await mixdropListFolder(env, "0");
-  if (root.folders.length === 0) return out;
+  // ROOT-LEVEL FIX: root folder me direct upload hui files kabhi sync nahi hoti thi
+  // (sirf subfolders scan hote the) — isliye naye MixDrop uploads drop/late ho rahe the.
+  if (root.folders.length === 0 && root.files.length === 0) return out;
 
   // THROTTLED ROUND-ROBIN: 6 folders/run + 200ms delay \u2014 MixDrop API "Too many
   // requests" (403) trigger karta hai jab ek run me bahut saare calls hote hain.
@@ -1354,6 +1356,9 @@ async function listMixdropUploads(env: Env, db: D1Database, cache: Map<string, n
       const sub = await mixdropListFolder(env, String(sf.id));
       allFiles.push(...sub.files);
     }
+    // NAYE PEHLE: MixDrop "added" timestamp mila to newest files aage —
+    // processed-cap (3/run) me bhi naye uploads queue ke aage se ingest honge.
+    allFiles.sort((a, b) => Number(b.added || 0) - Number(a.added || 0));
     if (folders.length > 1) await new Promise((r) => setTimeout(r, 250));
 
     for (const f of allFiles) {
@@ -1375,6 +1380,21 @@ async function listMixdropUploads(env: Env, db: D1Database, cache: Map<string, n
       }
       out.push({ id: "md_" + f.fileref, host: "mixdrop", fileName, size: Number(f.size) || 0, status: 200, pageUrl: String(f.embedurl || ("https://mixdrop.co/e/" + f.fileref)) });
     }
+  }
+
+  // ROOT-LEVEL FIX (cont.): root folder me seedhe pade video files bhi ingest karo —
+  // pehle sirf subfolders scan hote the, root uploads kabhi The Gate me nahi aate the.
+  for (const f of root.files) {
+    if (f.deleted || !f.isvideo) continue;
+    if (f.status && !/OK/i.test(f.status)) continue;
+    out.push({
+      id: "md_" + f.fileref,
+      host: "mixdrop",
+      fileName: String(f.title || ""),
+      size: Number(f.size) || 0,
+      status: 200,
+      pageUrl: String(f.embedurl || ("https://mixdrop.co/e/" + f.fileref)),
+    });
   }
   return out;
 }
