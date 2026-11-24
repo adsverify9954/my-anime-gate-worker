@@ -3209,4 +3209,18 @@ app.get("/catalog/ufoload.json", async (c) => {
   } catch (e: any) { return c.json({ error: String(e) }, 500); }
 });
 
+
+app.get("/debug/deadlink", async (c) => {
+  const file = c.req.query("file") || "";
+  if (!file) return c.json({ ok:false, error:"?file= required" }, 400);
+  try {
+    // file name me tmdb_<ID>_ ho to us ID ka sara inactive karo (dead upload)
+    const idm = file.match(/tmdb_(\d+)/);
+    if (!idm) return c.json({ ok:false, error:"no tmdb id in file name" }, 400);
+    const tmdbId = parseInt(idm[1], 10);
+    const r = await c.env.DB.prepare("UPDATE media_items SET is_active=0 WHERE tmdb_id=?").bind(tmdbId).run();
+    return c.json({ ok:true, tmdbId, changes:r?.changes ?? 0 }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,150) }, 500); }
+});
+
 export default app;
