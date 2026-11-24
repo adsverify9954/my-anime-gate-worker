@@ -1,3 +1,4 @@
+/** THE GATE - BEST BUILD (all hosts + catalogs + resolve/proxy + ufoload/mixdrop sources + rotating sync) */
 /**
  * =============================================================
  *  THE GATE \u2014 single-file Cloudflare Worker (browser deploy)
