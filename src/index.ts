@@ -1,4 +1,3 @@
-/** THE GATE - BEST BUILD (all hosts + catalogs + resolve/proxy + ufoload/mixdrop sources + rotating sync) */
 /**
  * =============================================================
  *  THE GATE \u2014 single-file Cloudflare Worker (browser deploy)
@@ -3286,6 +3285,36 @@ app.get("/catalog/mixdrop.json", async (c) => {
     }));
     return c.json({ metas }, 200, GATE_RESOLVE_CORS as any);
   } catch (e: any) { return c.json({ error: String(e) }, 500); }
+});
+
+
+// Streamtape device redirect: worker API se fresh ticket→dl link banayein,
+// phir 302 redirect — device apne IP se video fetch karega (IP-lock satisfy).
+app.get("/stx/:id", async (c) => {
+  const fid = (c.req.param("id") || "").replace(/[^A-Za-z0-9]/g, "");
+  const login = c.env.STREAMTAPE_USER || c.env.STREAMTAPE_LOGIN || "";
+  const key = c.env.STREAMTAPE_KEY || "";
+  if (!fid || !login || !key) return c.text("bad config", 500);
+  try {
+    const tk = await fetchJson(`https://api.streamtape.com/file/dlticket?file=${fid}&login=${encodeURIComponent(login)}&key=${encodeURIComponent(key)}`);
+    const ticket = tk.json?.result?.ticket;
+    if (!ticket) return c.text("ticket failed", 502);
+    for (let i = 0; i < 5; i++) {
+      const dl = await fetchJson(`https://api.streamtape.com/file/dl?file=${fid}&ticket=${encodeURIComponent(ticket)}`);
+      const url = dl.json?.result?.url;
+      if (url && /^https?:/i.test(url)) {
+        const h = new Headers();
+        for (const k of ["content-type", "content-length", "accept-ranges", "content-range", "etag"]) {
+          const v = dl.headers?.get?.(k); if (v) h.set(k, v);
+        }
+        h.set("Location", String(url));
+        return new Response(null, { status: 302, headers: h });
+      }
+      if (/wait/i.test(String(dl.json?.msg || ""))) { await new Promise((r) => setTimeout(r, 2000)); continue; }
+      break;
+    }
+    return c.text("resolve failed", 502);
+  } catch (e: any) { return c.text("error " + String(e?.message ?? e).slice(0, 60), 502); }
 });
 
 export default app;
