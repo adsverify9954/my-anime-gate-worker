@@ -3179,4 +3179,12 @@ app.get("/debug/rename", async (c) => {
   } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,150) }, 500); }
 });
 
+
+app.get("/debug/clearcache", async (c) => {
+  try {
+    await c.env.DB.prepare("DELETE FROM sync_state WHERE key IN ('uploads_cache','uploads_cache_at')").run();
+    return c.json({ ok: true, cleared: true }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,150) }, 500); }
+});
+
 export default app;
