@@ -565,11 +565,15 @@ async function streamtapeApiDirect(env: Env, fileId: string): Promise<string | n
   const tk = await fetchJson(`https://api.streamtape.com/file/dlticket?file=${encodeURIComponent(fileId)}&login=${encodeURIComponent(login)}&key=${encodeURIComponent(key)}`);
   const ticket = tk.json?.result?.ticket;
   if (!ticket) return null;
-  for (let i = 0; i < 5; i++) {
+  // API ka wait_time honor karo (4-12s) — pehle ticket ke turant baad dl call hoti thi
+  // jo "wait" me waste hoti thi aur sync ki wall-time limit kha jati thi.
+  const wait = Math.min(Math.max(Number(tk.json?.result?.wait_time || 5), 4), 12);
+  await new Promise((r) => setTimeout(r, wait * 1000));
+  for (let i = 0; i < 3; i++) {
     const dl = await fetchJson(`https://api.streamtape.com/file/dl?file=${encodeURIComponent(fileId)}&ticket=${encodeURIComponent(ticket)}`);
     const url = dl.json?.result?.url;
     if (url) return String(url);
-    if (/wait/i.test(String(dl.json?.msg || ""))) { await new Promise((r) => setTimeout(r, 2000)); continue; }
+    if (/wait/i.test(String(dl.json?.msg || ""))) { await new Promise((r) => setTimeout(r, 1500)); continue; }
     break;
   }
   return null;
@@ -1408,6 +1412,18 @@ async function runSync(env: Env): Promise<number> {
   lastSyncErrors = [];
   await ensureSchema(db);
 
+  // KILL-SAFE STATE: worker free plan me waitUntil ki wall-time limit se runSync
+  // kabhi-kabhi beech me kill ho jata tha (items write ho jate the par Phase 5 ka
+  // lastSyncAt update kabhi nahi pahunchta → lastSync frozen → har request dobara
+  // sync trigger → thrash). Isliye lastSyncAt/yahin shuru me turant likho —
+  // isSyncStale (5 min) ko pata chal jata hai ki run chal chuka hai.
+  try {
+    await db.batch([
+      db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncAt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(new Date().toISOString()),
+      db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncErrors',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind("[]"),
+    ]);
+  } catch { /* ignore */ }
+
   // Phase 1: listings (HTTP subrequests ~13)
   let budget = 20;
   const mdCache = new Map<string, number>();
@@ -1695,8 +1711,21 @@ async function runSync(env: Env): Promise<number> {
   }
 
   // Phase 4: batch write (1 D1 subrequest)
+  // Kill-safe: lastSyncAt + errors + cursor yahan bhi likho — agar run Phase 5 tak
+  // pahunchne se pehle kill ho jaye to bhi state fresh rahe (naya run 5 min baad hi).
   if (stmts.length > 0) {
+    stmts.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncAt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(new Date().toISOString()));
+    stmts.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncErrors',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(lastSyncErrors).slice(0, 4000)));
+    stmts.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('sync_cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(uploads.length ? (syncCursor + processedThisRun) % uploads.length : 0)));
     try { await db.batch(stmts); } catch (e) { lastSyncErrors.push("batch: " + String(e).slice(0, 140)); }
+  } else {
+    try {
+      await db.batch([
+        db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncAt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(new Date().toISOString()),
+        db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncErrors',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(lastSyncErrors).slice(0, 4000)),
+        db.prepare("INSERT INTO sync_state (key,value) VALUES ('sync_cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(uploads.length ? (syncCursor + processedThisRun) % uploads.length : 0)),
+      ]);
+    } catch (e) { lastSyncErrors.push("batch: " + String(e).slice(0, 140)); }
   }
 
   // Phase 5: cleanup + state (batched)
