@@ -1274,7 +1274,7 @@ async function mixdropListFolder(env: Env, folderId: string): Promise<{ folders:
       const { ok, status, json } = await fetchJson("https://api.mixdrop.ag/folderlist?email=" + E + "&key=" + K + "&id=" + folderId + "&page=1");
       if (!ok || !json?.success) {
         if (status === 403) {
-          // Cooldown set karo — 30 min tak MixDrop scan skip (cron 403 ko alive na rakhe).
+          // Cooldown set karo — 3 min tak MixDrop scan skip (cron 403 ko alive na rakhe).
           try {
             await env.DB.prepare("INSERT INTO sync_state (key,value) VALUES ('mxcooldown',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
               .bind(String(Date.now())).run();
@@ -3197,7 +3197,7 @@ app.get("/debug/rename", async (c) => {
 
 app.get("/debug/clearcache", async (c) => {
   try {
-    await c.env.DB.prepare("DELETE FROM sync_state WHERE key IN ('uploads_cache','uploads_cache_at')").run();
+    await c.env.DB.prepare("DELETE FROM sync_state WHERE key IN ('uploads_cache','uploads_cache_at','mxcooldown','sync_cursor')").run();
     return c.json({ ok: true, cleared: true }, 200, GATE_RESOLVE_CORS as any);
   } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,150) }, 500); }
 });
