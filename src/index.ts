@@ -3224,4 +3224,18 @@ app.get("/debug/deadlink", async (c) => {
   } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,150) }, 500); }
 });
 
+
+app.get("/debug/ufolinks", async (c) => {
+  const fid = c.req.query("id") || "";
+  const key = c.env.UFOLOAD_API_KEY || c.env.UFOLOAD_KEY || "";
+  if (!fid) return c.json({ok:false,error:"id required"});
+  try {
+    const r = await fetch("https://ufoload.com/api/v1/files/" + fid + "/links", {
+      method: "POST", headers: { Authorization: "Bearer " + key, Accept: "application/json" },
+    });
+    const t = await r.text();
+    return c.json({ ok:true, status:r.status, body:t.slice(0,400) }, 200, GATE_RESOLVE_CORS as any);
+  } catch(e:any) { return c.json({ok:false,error:String(e).slice(0,150)}); }
+});
+
 export default app;
