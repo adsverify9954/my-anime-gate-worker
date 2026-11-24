@@ -2054,8 +2054,11 @@ app.get("/stream/:type/:id.json", async (c) => {
                 if (playback && /^https?:\/\//.test(playback)) {
                   finalUrl = playback;
                   useWebview = false;
+                } else {
+                  // file delete/expired — ye stream return hi mat karo
+                  continue;
                 }
-              } catch { /* fallback page */ }
+              } catch { continue; }
             }
           }
           if (useWebview) {
@@ -3236,6 +3239,31 @@ app.get("/debug/ufolinks", async (c) => {
     const t = await r.text();
     return c.json({ ok:true, status:r.status, body:t.slice(0,400) }, 200, GATE_RESOLVE_CORS as any);
   } catch(e:any) { return c.json({ok:false,error:String(e).slice(0,150)}); }
+});
+
+
+app.get("/debug/cleanup-dead", async (c) => {
+  const key = c.env.UFOLOAD_API_KEY || c.env.UFOLOAD_KEY || "";
+  try {
+    const rows = await c.env.DB.prepare("SELECT id, ufoload_url FROM media_items WHERE ufoload_url LIKE '%/api/v1/files/%' AND is_active=1").all<any>();
+    let checked = 0, dead = 0;
+    for (const r of (rows.results || [])) {
+      const fid = String(r.ufoload_url || "").match(/\/api\/v1\/files\/([A-Za-z0-9]+)/)?.[1];
+      if (!fid) continue;
+      checked++;
+      try {
+        const res = await fetch("https://ufoload.com/api/v1/files/" + fid + "/links", {
+          method: "POST", headers: { Authorization: "Bearer " + key, Accept: "application/json" },
+        });
+        if (res.status === 404 || res.status === 410) {
+          await c.env.DB.prepare("UPDATE media_items SET ufoload_url='' WHERE id=?").bind(r.id).run();
+          dead++;
+        }
+      } catch { /* skip network error */ }
+    }
+    await c.env.DB.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND is_title_only=0").run();
+    return c.json({ ok:true, checked, dead }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,200) }); }
 });
 
 export default app;
