@@ -3266,4 +3266,25 @@ app.get("/debug/cleanup-dead", async (c) => {
   } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,200) }); }
 });
 
+
+app.get("/catalog/mixdrop.json", async (c) => {
+  try {
+    await ensureSchema(c.env.DB);
+    const { results } = await c.env.DB.prepare(
+      "SELECT * FROM media_items WHERE is_active=1 AND mixdrop_url IS NOT NULL AND mixdrop_url<>'' ORDER BY updated_at DESC, id DESC LIMIT 300"
+    ).all<any>();
+    const seen = new Set<string>();
+    const metas = (results || []).filter((item: any) => {
+      const key = `${item.tmdb_id}:${item.type}`;
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    }).map((item: any) => ({
+      id: `tmdb:${item.tmdb_id}`, type: item.type, name: item.title,
+      poster: item.poster, posterShape: "poster", background: item.backdrop,
+      description: item.overview || item.title, releaseInfo: "MixDrop",
+    }));
+    return c.json({ metas }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) { return c.json({ error: String(e) }, 500); }
+});
+
 export default app;
