@@ -1403,7 +1403,7 @@ async function runSync(env: Env): Promise<number> {
   const uploads: any[] = [];
   let listingFromCache = false;
   try {
-    const cacheRows = await db.prepare("SELECT key, value FROM sync_state WHERE key IN ('uploads_cache','uploads_cache_at')").all<any>();
+    const cacheRows = await db.prepare("SELECT key, value FROM sync_state WHERE key IN ('uploads_cache','uploads_cache_at','sync_cursor')").all<any>();
     const cm = new Map<string, string>();
     for (const r of (cacheRows.results || [])) cm.set(String(r.key), String(r.value));
     const at = Date.parse(cm.get("uploads_cache_at") || "");
@@ -1509,7 +1509,12 @@ async function runSync(env: Env): Promise<number> {
     stmts.push(db.prepare("INSERT INTO sync_state (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(k2, String(v2)));
   }
 
-  for (const upload of uploads) {
+  // Rotating cursor: har run alag uploads se shuru taaki baaki hosts (ufoload waghera)
+  // bhi process hon — warna pehle 3 hi baar baar pakde jate hain.
+  let syncCursor = parseInt(cm.get("sync_cursor") || "0", 10) || 0;
+  if (uploads.length) syncCursor = syncCursor % uploads.length;
+  const rotatedUploads = uploads.length ? [...uploads.slice(syncCursor), ...uploads.slice(0, syncCursor)] : uploads;
+  for (const upload of rotatedUploads) {
     if (budget < 3) { lastSyncErrors.push("budget: pausing \u2014 next run continue karega"); break; }
     // Cloudflare free plan ka 50-subrequest limit hai \u2014 ek run me zyada uploads process
     // karenge to invocation chupke se mar jayega (state update nahi hoga). Isliye
@@ -1679,6 +1684,7 @@ async function runSync(env: Env): Promise<number> {
   cleanup.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncAt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(new Date().toISOString()));
   cleanup.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncCount',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(ingested)));
   cleanup.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncErrors',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(lastSyncErrors).slice(0, 4000)));
+  cleanup.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('sync_cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(uploads.length ? (syncCursor + processedThisRun) % uploads.length : 0)));
   try { await db.batch(cleanup); } catch (e) { lastSyncErrors.push("cleanup: " + String(e).slice(0, 120)); }
   return ingested;
 }
