@@ -1917,7 +1917,7 @@ app.get("/meta/:type/:id.json", async (c) => {
     if (!pm || !m) return c.json({ meta: null });
     const type = pm[1] as MediaType;
     const tmdbId = parseInt(m[1], 10);
-    const { results: rows } = await c.env.DB.prepare("SELECT * FROM media_items WHERE tmdb_id=? AND type=? ORDER BY season, episode")
+    const { results: rows } = await c.env.DB.prepare("SELECT * FROM media_items WHERE tmdb_id=? AND type=? AND is_active=1 ORDER BY season, episode")
       .bind(tmdbId, type).all<any>();
     if (rows.length === 0) return c.json({ meta: null });
     const item = rows[0];
