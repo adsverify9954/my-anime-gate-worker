@@ -1433,7 +1433,7 @@ async function runSync(env: Env): Promise<number> {
     let mxAllowed = true;
     try {
       const cd = await db.prepare("SELECT value FROM sync_state WHERE key='mxcooldown'").first<any>();
-      if (cd?.value && Date.now() - Number(cd.value) < 1800000) mxAllowed = false;
+      if (cd?.value && Date.now() - Number(cd.value) < 180000) mxAllowed = false;
     } catch { /* ignore */ }
     // Watchlist PEHLE — /add se manually added entries budget khaane wale
     // host-scan errors se pehle process hon (83-file bulk adds critical).
