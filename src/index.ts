@@ -3344,4 +3344,25 @@ app.get("/debug/mxtest", async (c) => {
   return c.json({ ok: true, results: out }, 200, GATE_RESOLVE_CORS as any);
 });
 
+
+// Bulk insert MixDrop uploads into watchlist (name|url lines, POST body text/plain)
+app.post("/debug/addmix", async (c) => {
+  const body = await c.req.text();
+  const lines = body.split("\n").map(x => x.trim()).filter(Boolean);
+  let added = 0, errors: string[] = [];
+  for (const line of lines) {
+    const [name, url] = line.split("|").map(x => x?.trim());
+    if (!name || !url) { errors.push("bad line: " + line.slice(0, 40)); continue; }
+    const mt = /S\d+E\d+|S01E|episode/i.test(name) ? "series" : "movie";
+    const tm = name.match(/tmdb[_\s]?(\d+)/i);
+    const tmdbId = tm ? parseInt(tm[1], 10) : null;
+    try {
+      await c.env.DB.prepare("INSERT OR IGNORE INTO watchlist (url, host, file_name, media_type, tmdb_id) VALUES (?,?,?,?,?)")
+        .bind(url, "mixdrop", name, mt, tmdbId).run();
+      added++;
+    } catch (e: any) { errors.push(name.slice(0, 30) + ": " + String(e?.message ?? e).slice(0, 50)); }
+  }
+  return c.json({ ok: true, added, errors: errors.slice(0, 10) }, 200, GATE_RESOLVE_CORS as any);
+});
+
 export default app;
