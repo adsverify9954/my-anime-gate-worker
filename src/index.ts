@@ -3066,7 +3066,7 @@ app.get("/debug/names", async (c) => {
         if (f.host === "streamtape") {
           const login = c.env.STREAMTAPE_USER || c.env.STREAMTAPE_LOGIN || "";
           const r = await fetchJson(
-            `https://api.streamtape.com/file/rename?login=${encodeURIComponent(login)}&key=${encodeURIComponent(c.env.STREAMTAPE_KEY || "")}&id=${encodeURIComponent(f.id)}&name=${encodeURIComponent(newName)}`,
+            `https://api.streamtape.com/file/rename?login=${encodeURIComponent(login)}&key=${encodeURIComponent(c.env.STREAMTAPE_KEY || "")}&file=${encodeURIComponent(f.id)}&name=${encodeURIComponent(newName)}`,
           );
           renamed = !!r.ok && r.json?.status === 200;
           if (!renamed) error = JSON.stringify(r.json || r.text || {}).slice(0, 140);
