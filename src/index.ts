@@ -3520,6 +3520,12 @@ app.get("/sd/:id", async (c) => {
   } catch (e: any) { return c.text("error " + String(e?.message ?? e).slice(0, 70), 502); }
 });
 
+
+app.get("/debug/watchlist", async (c) => {
+  const { results } = await c.env.DB.prepare("SELECT * FROM watchlist WHERE tmdb_id=? OR file_name LIKE ? LIMIT 30").bind(127532, "%127532%").all<any>();
+  return c.json({ ok:true, rows:results }, 200, GATE_RESOLVE_CORS as any);
+});
+
 // CRON FIX: pehle sirf `export default app` tha — Cloudflare cron trigger ko
 // scheduled handler chahiye, warna har-minute cron KABHI fire nahi hota aur sync
 // sirf lazy (waitUntil ~30s wall-cap) pe chalta tha jo listing phase me mar jata
