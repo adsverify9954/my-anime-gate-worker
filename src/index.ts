@@ -3526,6 +3526,13 @@ app.get("/debug/watchlist", async (c) => {
   return c.json({ ok:true, rows:results }, 200, GATE_RESOLVE_CORS as any);
 });
 
+
+app.get("/debug/delwatch", async (c) => {
+  const like = c.req.query("like") || "%127532%";
+  const r = await c.env.DB.prepare("DELETE FROM watchlist WHERE file_name LIKE ?").bind(like).run();
+  return c.json({ ok:true, changes:r.changes || 0 }, 200, GATE_RESOLVE_CORS as any);
+});
+
 // CRON FIX: pehle sirf `export default app` tha — Cloudflare cron trigger ko
 // scheduled handler chahiye, warna har-minute cron KABHI fire nahi hota aur sync
 // sirf lazy (waitUntil ~30s wall-cap) pe chalta tha jo listing phase me mar jata
