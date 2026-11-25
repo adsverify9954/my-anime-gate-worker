@@ -1533,7 +1533,7 @@ async function runSync(env: Env): Promise<number> {
   let ingested = 0;
   let processedThisRun = 0;
   // Per-run processing cap (subrequest limit safety) + TMDB/extractor call budget.
-  const MAX_PROCESSED_PER_RUN = 3;
+  const MAX_PROCESSED_PER_RUN = 5;
   const stmts: any[] = [];
   // Naye upload ka pageUrl marker \u2192 agli sync me dobara extract/TMDB call nahi.
   // Value = "<rowId>|<fileRef>" \u2014 file ref se pata chalta hai ki ye file pehle se
@@ -1558,7 +1558,7 @@ async function runSync(env: Env): Promise<number> {
   let examined = 0;
   for (const upload of rotatedUploads) {
     // har run max ~40 uploads SCAN karo (budget/timeout guard) — baki next run
-    if (examined >= 40) { lastSyncErrors.push("scan-cap: 40 — next run continue karega"); break; }
+    if (examined >= 120) { lastSyncErrors.push("scan-cap: 120 — next run continue karega"); break; }
     examined++;
     if (budget < 3) { lastSyncErrors.push("budget: pausing \u2014 next run continue karega"); break; }
     // Cloudflare free plan ka 50-subrequest limit hai \u2014 ek run me zyada uploads process
