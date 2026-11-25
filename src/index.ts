@@ -1433,18 +1433,23 @@ async function runSync(env: Env): Promise<number> {
     for (const r of (cacheRows.results || [])) mdCache.set(r.key, parseInt(r.value, 10) || 0);
   } catch { /* ignore */ }
 
-  // Listing cache (2 min): har sync me 6 hosts list karne se ~25 subrequests + 10s sleep
-  // lagta hai (free plan ka 50-subrequest limit tight ho jaata hai). Cache se repeat
-  // sync ~1s me hota hai; naye upload 2-5 min me pakde jaate hain.
-  const LISTING_CACHE_MS = 10 * 60 * 1000;
+  // Listing cache + HOST-GROUP ROTATION:
+  // Poori fresh listing (sab hosts ek saath, 239+ uploads) free plan ki waitUntil
+  // wall-time (~30s) me fit nahi hoti thi — runs listing ke beech kill ho rahe the
+  // (lastSyncAt frozen, naye uploads kabhi ingest nahi hote). Ab: cache se shuru +
+  // har run sirf EK host-group ki fresh listing (round-robin) — listing per run
+  // ~5-10 subrequests, run hamesha phase-4 tak pahunchta hai.
+  const LISTING_CACHE_MS = 15 * 60 * 1000;
   const uploads: any[] = [];
   let listingFromCache = false;
   let syncCursor = 0;
+  let listCursor = 0;
   try {
-    const cacheRows = await db.prepare("SELECT key, value FROM sync_state WHERE key IN ('uploads_cache','uploads_cache_at','sync_cursor')").all<any>();
+    const cacheRows = await db.prepare("SELECT key, value FROM sync_state WHERE key IN ('uploads_cache','uploads_cache_at','sync_cursor','list_cursor')").all<any>();
     const cm = new Map<string, string>();
     for (const r of (cacheRows.results || [])) cm.set(String(r.key), String(r.value));
     syncCursor = parseInt(cm.get("sync_cursor") || "0", 10) || 0;
+    listCursor = parseInt(cm.get("list_cursor") || "0", 10) || 0;
     const at = Date.parse(cm.get("uploads_cache_at") || "");
     if (cm.has("uploads_cache") && Number.isFinite(at) && Date.now() - at < LISTING_CACHE_MS) {
       const cached = JSON.parse(cm.get("uploads_cache") || "[]");
@@ -1454,9 +1459,9 @@ async function runSync(env: Env): Promise<number> {
       }
     }
   } catch { /* ignore */ }
-  if (listingFromCache) {
-    // Cache active ho to bhi WATCHLIST hamesha fresh rakhna zaroori hai —
-    // /add se turant add hui entries cache window ke andar bhi process honi chahiye.
+
+  // Watchlist hamesha fresh (D1 read, sasta) — /add entries turant process hon.
+  try {
     const wl = await listWatchlist(db);
     const seenWl = new Set<string>(uploads.map((u: any) => u.pageUrl).filter(Boolean));
     for (const u of wl) {
@@ -1464,35 +1469,68 @@ async function runSync(env: Env): Promise<number> {
       seenWl.add(u.pageUrl);
       uploads.push(u);
     }
-  }
-  if (!listingFromCache) {
-    // MixDrop cooldown: 403 aane par 30 min tak scan skip (rate-limit reset).
+  } catch { /* ignore */ }
+
+  // HOST GROUPS — har run me sirf ek group fresh list hota hai (round-robin).
+  const GROUPS: string[][] = [
+    ["streamtape"],
+    ["mixdrop"],
+    ["ufoload", "abyss", "byse", "earnvids", "doodstream"],
+  ];
+  const groupNames = ["streamtape", "mixdrop", "rest"];
+  let groupIdx = listingFromCache ? (listCursor % GROUPS.length) : -1;
+  if (listingFromCache) {
+    const g = GROUPS[groupIdx];
+    const merged = new Map<string, any>();
+    for (const u of uploads) if (u.pageUrl) merged.set(u.pageUrl, u);
+    const fresh: any[] = [];
+    for (const host of g) {
+      try {
+        if (host === "streamtape") fresh.push(...(await listStreamtape(env)));
+        else if (host === "mixdrop") {
+          // MixDrop cooldown: 403 aane par 30 min tak scan skip (rate-limit reset).
+          let mxAllowed = true;
+          try {
+            const cd = await db.prepare("SELECT value FROM sync_state WHERE key='mxcooldown'").first<any>();
+            if (cd?.value && Date.now() - Number(cd.value) < 180000) mxAllowed = false;
+          } catch { /* ignore */ }
+          if (mxAllowed) fresh.push(...(await listMixdropUploads(env, db, mdCache)));
+        }
+        else if (host === "ufoload") fresh.push(...(await listUfoloadUploads(env)));
+        else if (host === "abyss") fresh.push(...(await listAbyssUploads(env)));
+        else if (host === "byse") fresh.push(...(await listByseUploads(env)));
+        else if (host === "earnvids") fresh.push(...(await listEarnvidsUploads(env)));
+        else if (host === "doodstream") fresh.push(...(await listDoodstreamUploads(env)));
+      } catch (e) { lastSyncErrors.push("group-list " + host + ": " + String(e).slice(0, 80)); }
+    }
+    for (const u of fresh) if (u.pageUrl) merged.set(u.pageUrl, u);
+    uploads.length = 0;
+    uploads.push(...merged.values());
+  } else {
+    // Cache missing/expire — poora fresh listing (rare).
     let mxAllowed = true;
     try {
       const cd = await db.prepare("SELECT value FROM sync_state WHERE key='mxcooldown'").first<any>();
       if (cd?.value && Date.now() - Number(cd.value) < 180000) mxAllowed = false;
     } catch { /* ignore */ }
-    // Watchlist PEHLE — /add se manually added entries budget khaane wale
-    // host-scan errors se pehle process hon (83-file bulk adds critical).
     // Watchlist + DoodStream pehle (naye uploads fast process — queue me peeche na rahein)
-    const allUploads: any[] = [...(await listWatchlist(db)), ...(await listDoodstreamUploads(env)), ...parseUploadsJson(env), ...(await listStreamtape(env)), ...(mxAllowed ? (await listMixdropUploads(env, db, mdCache)) : []), ...(await listAbyssUploads(env)), ...(await listByseUploads(env)), ...(await listUfoloadUploads(env)), ...(await listEarnvidsUploads(env))];
+    const allUploads: any[] = [...(await listDoodstreamUploads(env)), ...parseUploadsJson(env), ...(await listStreamtape(env)), ...(mxAllowed ? (await listMixdropUploads(env, db, mdCache)) : []), ...(await listAbyssUploads(env)), ...(await listByseUploads(env)), ...(await listUfoloadUploads(env)), ...(await listEarnvidsUploads(env))];
     const seenUp = new Set<string>();
     for (const u of allUploads) {
       if (!u.pageUrl || seenUp.has(u.pageUrl)) continue;
       seenUp.add(u.pageUrl);
       uploads.push(u);
     }
-    try {
-      const stmts0 = db.prepare("INSERT INTO sync_state (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
-      await db.batch([
-        stmts0.bind("uploads_cache", JSON.stringify(uploads).slice(0, 60000)),
-        stmts0.bind("uploads_cache_at", new Date().toISOString()),
-      ]);
-    } catch { /* ignore cache write */ }
   }
-  lastSyncErrors.push("debug: uploads=" + uploads.length + (listingFromCache ? " (cached)" : ""));
-
-  // Phase 2: existing ids (1 D1 subrequest)
+  try {
+    const stmts0 = db.prepare("INSERT INTO sync_state (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+    await db.batch([
+      stmts0.bind("uploads_cache", JSON.stringify(uploads).slice(0, 60000)),
+      stmts0.bind("uploads_cache_at", new Date().toISOString()),
+      stmts0.bind("list_cursor", String(listingFromCache ? (listCursor + 1) : 0)),
+    ]);
+  } catch { /* ignore cache write */ }
+  lastSyncErrors.push("debug: uploads=" + uploads.length + (listingFromCache ? (" (cached, group=" + groupNames[groupIdx] + ")") : " (full)"));
   const existingIds = new Set<string>();
   try {
     const allRows = await db.prepare("SELECT id FROM media_items").all<any>();
