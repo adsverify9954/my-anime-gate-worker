@@ -2207,7 +2207,10 @@ app.get("/stream/:type/:id.json", async (c) => {
           name: `The Gate \u00B7 ${HOST_LABEL[host]}`,
           title: item.season != null ? `${item.title} S${item.season}E${item.episode}` : item.title,
           host, url: finalUrl, webview: useWebview,
-          behaviorHints: { proxyHeaders: { request: headersForHost(c.env, host) } },
+          behaviorHints: {
+            proxyHeaders: { request: headersForHost(c.env, host) },
+            theGateWebview: useWebview,
+          },
         });
       }
     }
