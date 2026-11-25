@@ -1967,10 +1967,10 @@ app.get("/manifest.json", (c) => {
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
     catalogs: [
-      { type: "movie", id: "movies", name: "The Gate Movies", extraSupported: ["search"] },
-      { type: "series", id: "series", name: "The Gate Series", extraSupported: ["search"] },
-      { type: "series", id: "anime", name: "The Gate Anime", extraSupported: ["search"] },
-      { type: "series", id: "tv", name: "The Gate TV", extraSupported: ["search"] },
+      { type: "movie", id: "movies", name: "The Gate Movies", extraSupported: ["search"], extra: [SEARCH_EXTRA] },
+      { type: "series", id: "series", name: "The Gate Series", extraSupported: ["search"], extra: [SEARCH_EXTRA] },
+      { type: "series", id: "anime", name: "The Gate Anime", extraSupported: ["search"], extra: [SEARCH_EXTRA] },
+      { type: "series", id: "tv", name: "The Gate TV", extraSupported: ["search"], extra: [SEARCH_EXTRA] },
     ],
     behaviorHints: { adult: false, p2p: false },
   });
@@ -2017,6 +2017,72 @@ app.get("/catalog/:type/:id.json", async (c) => {
       };
     }),
   });
+});
+
+// ---------------------------------------------------------------------------
+// CATALOG SEARCH (Stremio path-style: /catalog/<type>/<id>/search=<query>.json)
+// Nuvio/KuroX sirf tab search bhejte hain jab manifest me catalog ke paas
+// standard "extra": [{name:"search"}] ho. Pehle sirf extraSupported tha, isliye
+// app "No searchable catalogs" dikhata tha. Ye route wahi query D1 me chalata hai
+// jo /catalog/...json?q= chalata hai, bas URL path se query nikaal ke.
+// ---------------------------------------------------------------------------
+const SEARCH_EXTRA = { name: "search", isRequired: false };
+
+async function buildCatalogMetas(env: Env, type: MediaType, categoryId: string, q: string | null) {
+  let sql = "SELECT * FROM media_items WHERE is_active=1 AND type=?";
+  const params: unknown[] = [type];
+  if (categoryId === "anime" || categoryId === "tv") {
+    sql += " AND category=?";
+    params.push(categoryId);
+  }
+  if (q && q.trim()) {
+    sql += " AND (title LIKE ? OR CAST(tmdb_id AS TEXT)=?)";
+    params.push(`%${q.trim()}%`, q.trim());
+  }
+  sql += " ORDER BY updated_at DESC, id DESC LIMIT 500";
+  const { results } = await env.DB.prepare(sql).bind(...params).all<any>();
+  const seen = new Set<string>();
+  return results.filter((item: any) => {
+    const key = `${item.tmdb_id}:${item.type}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map((item: any) => {
+    const cat = item.category || (item.type === "movie" ? "movie" : "tv");
+    const label = cat === "anime" ? "Anime" : cat === "movie" ? "Movie" : "Series";
+    return {
+      id: `tmdb:${item.tmdb_id}`, type: item.type, name: item.title,
+      poster: item.poster, posterShape: "poster", background: item.backdrop,
+      description: item.overview || item.title,
+      releaseInfo: label,
+      category: cat,
+    };
+  });
+}
+
+app.get("/catalog/:type/:id/*", async (c) => {
+  const pm = new URL(c.req.url).pathname.match(/^\/catalog\/(movie|series)\/([A-Za-z0-9_-]+)\/(.+?)\.json$/);
+  if (!pm) return c.json({ metas: [] });
+  const type = pm[1] as MediaType;
+  const categoryId = pm[2];
+  const extraPath = decodeURIComponent(pm[3] || "");
+  // extra path segments Stremio "key=value" pairs hote hain, "&" se juda hua.
+  let q: string | null = null;
+  let skip = 0;
+  for (const part of extraPath.split("&")) {
+    const [k, v] = part.split("=");
+    if (!k) continue;
+    if (k.toLowerCase() === "search" && v !== undefined) q = decodeURIComponent(v.replace(/\+/g, " "));
+    if (k.toLowerCase() === "skip" && v) skip = Math.max(0, parseInt(v, 10) || 0);
+  }
+  if (q === null) q = c.req.query("q") ?? null;
+  try {
+    await ensureSchema(c.env.DB);
+    const metas = await buildCatalogMetas(c.env, type, categoryId, q);
+    return c.json({ metas: skip > 0 ? metas.slice(skip) : metas });
+  } catch (e: any) {
+    return c.json({ metas: [], err: String(e?.message ?? e).slice(0, 120) });
+  }
 });
 
 app.get("/meta/:type/:id.json", async (c) => {
