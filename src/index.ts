@@ -1879,6 +1879,20 @@ app.get("/debug/sync", async (c) => {
   }
 });
 
+// DEBUG: sync_state ki saari non-secret keys — sync_cursor, list_cursor,
+// cooldowns, lastSync timestamps ek jagah dekh lo (playback/sync debugging ke liye).
+app.get("/debug/state", async (c) => {
+  try {
+    await ensureSchema(c.env.DB);
+    const rows = await c.env.DB.prepare("SELECT key, value FROM sync_state WHERE key NOT LIKE '%cache%'").all<any>();
+    const out: Record<string, string> = {};
+    for (const r of (rows.results || [])) out[String(r.key)] = String(r.value).slice(0, 400);
+    return c.json(out, 200, GATE_RESOLVE_CORS as any);
+  } catch (e) {
+    return c.json({ ok: false, error: String(e) }, 500);
+  }
+});
+
 app.get("/debug/db", async (c) => {
   try {
     const schemaErrors = await ensureSchema(c.env.DB);
@@ -3505,4 +3519,16 @@ app.get("/sd/:id", async (c) => {
   } catch (e: any) { return c.text("error " + String(e?.message ?? e).slice(0, 70), 502); }
 });
 
-export default app;
+// CRON FIX: pehle sirf `export default app` tha — Cloudflare cron trigger ko
+// scheduled handler chahiye, warna har-minute cron KABHI fire nahi hota aur sync
+// sirf lazy (waitUntil ~30s wall-cap) pe chalta tha jo listing phase me mar jata
+// tha. Ab cron full budget ke saath sync chalata hai; lazy-sync backup rahega.
+export default {
+  fetch: app.fetch,
+  async scheduled(_event: unknown, env: Env, ctx: { waitUntil: (p: Promise<unknown>) => void }) {
+    if (String(env.CRON_ENABLED ?? "true") !== "true") return;
+    try {
+      ctx.waitUntil(triggerSync(env));
+    } catch { /* ignore */ }
+  },
+};
