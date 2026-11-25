@@ -3464,6 +3464,7 @@ app.get("/debug/mxtest", async (c) => {
 
 // Bulk insert MixDrop uploads into watchlist (name|url lines, POST body text/plain)
 app.post("/debug/addmix", async (c) => {
+  const host = (c.req.query("host") || "mixdrop").toLowerCase();
   const body = await c.req.text();
   const lines = body.split("\n").map(x => x.trim()).filter(Boolean);
   let added = 0, errors: string[] = [];
@@ -3475,7 +3476,7 @@ app.post("/debug/addmix", async (c) => {
     const tmdbId = tm ? parseInt(tm[1], 10) : null;
     try {
       await c.env.DB.prepare("INSERT OR IGNORE INTO watchlist (url, host, file_name, media_type, tmdb_id) VALUES (?,?,?,?,?)")
-        .bind(url, "mixdrop", name, mt, tmdbId).run();
+        .bind(url, host, name, mt, tmdbId).run();
       added++;
     } catch (e: any) { errors.push(name.slice(0, 30) + ": " + String(e?.message ?? e).slice(0, 50)); }
   }
