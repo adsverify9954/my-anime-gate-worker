@@ -3468,4 +3468,41 @@ app.post("/debug/addmix", async (c) => {
   return c.json({ ok: true, added, errors: errors.slice(0, 10) }, 200, GATE_RESOLVE_CORS as any);
 });
 
+
+// Streamtape direct stream: worker API se fresh ticket banata hai (server IP par
+// locked hota hai), isliye worker hi video bytes fetch karke device ko deta hai.
+app.get("/sd/:id", async (c) => {
+  const fid = (c.req.param("id") || "").replace(/[^A-Za-z0-9]/g, "");
+  const login = c.env.STREAMTAPE_USER || c.env.STREAMTAPE_LOGIN || "";
+  const key = c.env.STREAMTAPE_KEY || "";
+  if (!fid || !login || !key) return c.text("bad config", 500);
+  try {
+    let direct: string | null = null, last = "";
+    for (let a = 0; a < 3; a++) {
+      const tk = await fetchJson(`https://api.streamtape.com/file/dlticket?file=${fid}&login=${encodeURIComponent(login)}&key=${encodeURIComponent(key)}`);
+      const ticket = tk.json?.result?.ticket;
+      if (!ticket) { last = "ticket " + String(tk.json?.msg || "none"); break; }
+      const wait = Math.min(Number(tk.json?.result?.wait_time || 5), 9);
+      await new Promise((r) => setTimeout(r, (wait + 1) * 1000));
+      const dl = await fetchJson(`https://api.streamtape.com/file/dl?file=${fid}&ticket=${encodeURIComponent(ticket)}`);
+      direct = dl.json?.result?.url || null;
+      if (direct) break;
+      last = "dl " + String(dl.json?.msg || "none");
+    }
+    if (!direct) return c.text("resolve " + last, 502);
+    const h: Record<string, string> = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36", Referer: "https://streamtape.com/" };
+    const range = c.req.header("Range");
+    if (range) h["Range"] = range;
+    const res = await fetch(direct, { headers: h, redirect: "follow" });
+    if (!res.ok && res.status !== 206) return c.text("upstream " + res.status, 502);
+    const out = new Headers();
+    for (const k of ["content-type", "content-length", "accept-ranges", "content-range", "etag"]) {
+      const v = res.headers.get(k); if (v) out.set(k, v);
+    }
+    out.set("Access-Control-Allow-Origin", "*");
+    out.set("Cache-Control", "no-store");
+    return new Response(res.body, { status: res.status, headers: out });
+  } catch (e: any) { return c.text("error " + String(e?.message ?? e).slice(0, 70), 502); }
+});
+
 export default app;
