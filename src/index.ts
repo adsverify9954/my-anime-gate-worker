@@ -1273,9 +1273,10 @@ async function mixdropListFolder(env: Env, folderId: string): Promise<{ folders:
   const E = encodeURIComponent(env.MIXDROP_EMAIL!);
   const K = encodeURIComponent(env.MIXDROP_KEY!);
   // Rate-limit (403 "Too many requests") retry + gentle delay.
+  // Timeout 8s — 15s default par dead-host hang me listing crawl ho jati thi.
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const { ok, status, json } = await fetchJson("https://api.mixdrop.ag/folderlist?email=" + E + "&key=" + K + "&id=" + folderId + "&page=1");
+      const { ok, status, json } = await fetchJson("https://api.mixdrop.ag/folderlist?email=" + E + "&key=" + K + "&id=" + folderId + "&page=1", {}, 8000);
       if (!ok || !json?.success) {
         if (status === 403) {
           // Cooldown set karo — 3 min tak MixDrop scan skip (cron 403 ko alive na rakhe).
@@ -1745,8 +1746,16 @@ async function runSync(env: Env): Promise<number> {
 // kabhi sync hi nahi hote the. Isliye catalog/stream request par, agar last
 // sync stale hai, to yahin background me runSync chala dete hain.
 let syncInFlight: Promise<number> | null = null;
+let syncStartedAt = 0;
 function triggerSync(env: Env): Promise<number> {
+  const now = Date.now();
+  // STUCK-RUN GUARD: agar pichla run 4+ min se "in flight" hai (dead-host 15s
+  // timeouts se listing crawl hoti hai) to use abandon karke naya run start karo —
+  // warna har naya trigger usi stuck promise ko return karta rehta hai aur
+  // naye uploads kabhi ingest nahi hote.
+  if (syncInFlight && now - syncStartedAt > 240000) syncInFlight = null;
   if (!syncInFlight) {
+    syncStartedAt = now;
     syncInFlight = runSync(env)
       .catch(async (e) => {
         const msg = "lazy sync failed: " + String(e).slice(0, 300);
