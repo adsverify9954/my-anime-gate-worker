@@ -3540,6 +3540,15 @@ app.get("/debug/delwatch", async (c) => {
 // scheduled handler chahiye, warna har-minute cron KABHI fire nahi hota aur sync
 // sirf lazy (waitUntil ~30s wall-cap) pe chalta tha jo listing phase me mar jata
 // tha. Ab cron full budget ke saath sync chalata hai; lazy-sync backup rahega.
+
+app.get("/debug/tmdb", async (c) => {
+  const name = c.req.query("name") || "";
+  if (!name) return c.json({ ok:false, error:"name required" }, 400);
+  const p = parseFilename(name);
+  const m = await tmdbMatch(c.env, p);
+  return c.json({ ok: !!m, input: name, title: p.title, tmdbId: m?.tmdbId ?? null, type: m?.type ?? null, name: m?.name ?? null }, 200, GATE_RESOLVE_CORS as any);
+});
+
 export default {
   fetch: app.fetch,
   async scheduled(_event: unknown, env: Env, ctx: { waitUntil: (p: Promise<unknown>) => void }) {
