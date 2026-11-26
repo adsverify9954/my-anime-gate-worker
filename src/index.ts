@@ -1677,7 +1677,9 @@ async function runSync(env: Env): Promise<number> {
         budget--;
         try { directUrl = await extractStreamtape(upload.pageUrl, undefined, undefined, env); } catch (e) { directUrl = null; const es = String(e); if (!/404|no robotlink/i.test(es)) lastSyncErrors.push("streamtape: " + es.slice(0, 120)); }
       }
-  } else if (upload.host === "abyss" || upload.host === "byse" || upload.host === "ufoload" || upload.host === "earnvids") {
+  } else if (upload.host === "abyss" || upload.host === "byse" || upload.host === "ufoload" || upload.host === "earnvids" || upload.host === "mixdrop") {
+    // MixDrop: Cloudflare IP se extract 403 hota hai — device-side resolve (webview/WebView)
+    // isliye pageUrl ko hi direct URL maano taaki episode catalog me aaye.
     valid = Boolean(upload.pageUrl);
     ready = valid;
     directUrl = upload.pageUrl;
