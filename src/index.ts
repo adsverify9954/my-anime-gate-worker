@@ -3549,6 +3549,21 @@ app.get("/debug/tmdb", async (c) => {
   return c.json({ ok: !!m, input: name, title: p.title, tmdbId: m?.tmdbId ?? null, type: m?.type ?? null, name: m?.name ?? null }, 200, GATE_RESOLVE_CORS as any);
 });
 
+
+// MixDrop rename: /debug/mixrename?file=<file_ref>&name=<new name>
+app.get("/debug/mixrename", async (c) => {
+  const fileRef = (c.req.query("file") || "").replace(/[^A-Za-z0-9]/g, "");
+  const newName = c.req.query("name") || "";
+  const E = c.env.MIXDROP_EMAIL || "";
+  const K = c.env.MIXDROP_KEY || "";
+  if (!fileRef || !newName || !E || !K) return c.json({ ok:false, error:"file, name, MIXDROP_EMAIL/KEY required" }, 400);
+  try {
+    const u = `https://api.mixdrop.ag/file/rename?email=${encodeURIComponent(E)}&key=${encodeURIComponent(K)}&file=${encodeURIComponent(fileRef)}&name=${encodeURIComponent(newName)}`;
+    const r = await fetchJson(u);
+    return c.json({ ok: !!r.ok, status: r.status, body: String(r.text || "").slice(0, 200), file: fileRef, name: newName }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,150) }, 500); }
+});
+
 export default {
   fetch: app.fetch,
   async scheduled(_event: unknown, env: Env, ctx: { waitUntil: (p: Promise<unknown>) => void }) {
