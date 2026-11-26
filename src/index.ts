@@ -1103,18 +1103,57 @@ async function listStreamtape(env: Env) {
   const root = await call();
   if (!root) return [];
   collect(root);
-  // 2 folders per run — minute ke hisaab se rotate (free-tier subrequest limit)
-  const folders: any[] = root?.result?.folders || [];
-  if (folders.length) {
-    const start = new Date().getUTCMinutes() % folders.length;
-    for (let i = 0; i < Math.min(2, folders.length); i++) {
-      const folder = folders[(start + i) % folders.length];
-      const fid = folder?.id;
-      if (!fid) continue;
-      const j = await call(String(fid));
-      if (j) collect(j);
+
+  // FOLDER QUEUE (D1 persist): root folders + nested "Season N" subfolders sab
+  // eventually scan ho. Pehle sirf 2 root folders per run list hote the aur
+  // subfolders recurse nahi hote the — isliye /Show/Season 1/ me nayi episodes
+  // kabhi auto-sync nahi hoti thin. Ab har run 3 folders (queue cursor se),
+  // naye subfolders queue me add hote jaate hain.
+  let queue: string[] = [];
+  let cursor = 0;
+  try {
+    const rows = await env.DB.prepare(
+      "SELECT key, value FROM sync_state WHERE key IN ('st_folder_queue','st_folder_cursor')",
+    ).all<any>();
+    const m = new Map<string, string>();
+    for (const r of (rows.results || [])) m.set(String(r.key), String(r.value));
+    try {
+      const q = JSON.parse(m.get("st_folder_queue") || "[]");
+      if (Array.isArray(q)) queue = q.map(String).filter(Boolean);
+    } catch { /* ignore */ }
+    cursor = parseInt(m.get("st_folder_cursor") || "0", 10) || 0;
+  } catch { /* ignore */ }
+
+  const known = new Set(queue);
+  for (const fo of (root?.result?.folders || [])) {
+    const id = String(fo?.id || "");
+    if (id && !known.has(id)) { queue.push(id); known.add(id); }
+  }
+
+  const SCAN = Math.min(3, queue.length);
+  for (let i = 0; i < SCAN; i++) {
+    const idx = (cursor + i) % queue.length;
+    const j = await call(queue[idx]);
+    if (!j) continue;
+    collect(j);
+    for (const sf of (j?.result?.folders || [])) {
+      const sid = String(sf?.id || "");
+      if (sid && !known.has(sid)) { queue.push(sid); known.add(sid); }
     }
   }
+  cursor = queue.length ? (cursor + SCAN) % queue.length : 0;
+  if (queue.length > 400) queue = queue.slice(0, 400);
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO sync_state (key,value) VALUES ('st_folder_queue',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      ).bind(JSON.stringify(queue).slice(0, 12000)),
+      env.DB.prepare(
+        "INSERT INTO sync_state (key,value) VALUES ('st_folder_cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      ).bind(String(cursor)),
+    ]);
+  } catch { /* ignore */ }
+
   return out;
 }
 
