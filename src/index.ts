@@ -1,3 +1,4 @@
+// BUILD MARKER 2600 - trigger redeploy with tmdb+mixrename endpoints
 /**
  * =============================================================
  *  THE GATE \u2014 single-file Cloudflare Worker (browser deploy)
