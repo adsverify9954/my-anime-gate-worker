@@ -328,12 +328,18 @@ function parseFilename(fileName: string) {
   const out = { tmdbId: null as number | null, season: null as number | null, episode: null as number | null, title: null as string | null, year: null as number | null };
   const ym = clean.match(/\((19\d{2}|20\d{2})\)|(?:\s|^)(19\d{2}|20\d{2})(?:\s|$)/);
   if (ym) out.year = parseInt(ym[1] || ym[2], 10);
-  const tmdbMatch = clean.match(/tmdb[_\s]?(\d+)(?:[_\s\-]?[Ss](\d+)[_\s\-]?[Ee](\d+))?/);
+  const tmdbMatch = clean.match(/tmdb[_\s]?(\d+)/);
   if (tmdbMatch) {
     out.tmdbId = parseInt(tmdbMatch[1], 10);
-    if (tmdbMatch[2] != null && tmdbMatch[3] != null) {
-      out.season = parseInt(tmdbMatch[2], 10);
-      out.episode = parseInt(tmdbMatch[3], 10);
+    // BUG-FIX: SxxEyy id ke TURANT baad hona zaroori nahi — hamare host file
+    // names "tmdb_<id>_<Show Title>_SxxEyy.mp4" form me hote hain. Pehle regex
+    // sirf "tmdb_<id>_SxxEyy" par season/episode pakadta tha, isliye title wale
+    // episode files "movie" ban jaate the aur TMDB movie/tv id collision se
+    // galat title (jaise 83095 → "We Live Together 20") catalog me aa jata tha.
+    const se = clean.match(/[Ss](\d{1,2})[_\s\-]?[Ee](\d{1,3})/);
+    if (se) {
+      out.season = parseInt(se[1], 10);
+      out.episode = parseInt(se[2], 10);
     }
     return out;
   }
@@ -3369,6 +3375,25 @@ app.get("/debug/clearcache", async (c) => {
     await c.env.DB.prepare("DELETE FROM sync_state WHERE key IN ('uploads_cache','uploads_cache_at','mxcooldown','sync_cursor')").run();
     return c.json({ ok: true, cleared: true }, 200, GATE_RESOLVE_CORS as any);
   } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,150) }, 500); }
+});
+
+// Galat TMDB match wali row hatane ke liye (movie/tv id collision se bane rows).
+// GET /debug/delrow?id=83095:movie:0:0  (comma se multiple ids bhi chalenge)
+app.get("/debug/delrow", async (c) => {
+  const raw = c.req.query("id") || "";
+  const ids = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  if (!ids.length) return c.json({ ok: false, error: "id required" }, 400);
+  const deleted: string[] = [];
+  const failed: string[] = [];
+  for (const id of ids) {
+    try {
+      await c.env.DB.prepare("DELETE FROM media_items WHERE id=?").bind(id).run();
+      deleted.push(id);
+    } catch (e: any) {
+      failed.push(id + ": " + String(e?.message ?? e).slice(0, 80));
+    }
+  }
+  return c.json({ ok: failed.length === 0, deleted, failed }, 200, GATE_RESOLVE_CORS as any);
 });
 
 
