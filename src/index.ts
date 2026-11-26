@@ -3565,6 +3565,52 @@ app.get("/debug/mixrename", async (c) => {
   } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,150) }, 500); }
 });
 
+
+// Manual row insert (for episodes jinki host extraction Cloudflare IP se block hai)
+app.post("/debug/insert", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!Array.isArray(body)) return c.json({ ok: false, error: "JSON array required" }, 400);
+  const HOSTCOL: Record<string, string> = {
+    streamtape: "streamtape_url", vidmoly: "vidmoly_url", mixdrop: "mixdrop_url",
+    ufoload: "ufoload_url", abyss: "abyss_url", byse: "byse_url",
+    earnvids: "earnvids_url", doodstream: "doodstream_url",
+  };
+  let inserted = 0; const errors: string[] = [];
+  const key = c.env.TMDB_API_KEY;
+  for (const r of body) {
+    const tmdbId = Number(r.tmdbId);
+    const host = String(r.host || "").toLowerCase();
+    const url = String(r.url || "");
+    const season = r.season != null ? Number(r.season) : null;
+    const episode = r.episode != null ? Number(r.episode) : null;
+    const col = HOSTCOL[host];
+    if (!tmdbId || !col || !url) { errors.push("bad row: " + JSON.stringify(r).slice(0, 60)); continue; }
+    try {
+      const kind = season != null || episode != null ? "tv" : "movie";
+      const d = await fetchJson(`https://api.themoviedb.org/3/${kind}/${tmdbId}?api_key=${key}&language=en-US`);
+      const j = d.json || {};
+      const title = String(j.name || j.title || r.title || "Unknown");
+      const poster = j.poster_path ? `https://image.tmdb.org/t/p/w500${j.poster_path}` : "";
+      const backdrop = j.backdrop_path ? `https://image.tmdb.org/t/p/w1280${j.backdrop_path}` : "";
+      const overview = String(j.overview || "");
+      const rating = typeof j.vote_average === "number" ? j.vote_average : 0;
+      const genres = ((j.genres || []) as any[]).map((g: any) => String(g.name || ""));
+      const origin = String(j.origin_country?.[0] || "");
+      const category = kind === "movie" ? "movie" : (genres.some((g) => /animation|anime/i.test(g)) || origin === "JP" ? "anime" : "tv");
+      const id = `${tmdbId}:${kind === "movie" ? "movie" : "series"}:${season ?? 0}:${episode ?? 0}`;
+      const cols = ["id","tmdb_id","type","title","poster","backdrop","overview","rating","season","episode","category",col,"is_active"];
+      const vals = [id,tmdbId,kind === "movie" ? "movie" : "series",title,poster,backdrop,overview,rating,season,episode,category,url,1];
+      const placeholders = cols.map(() => "?").join(",");
+      await c.env.DB.prepare(
+        `INSERT INTO media_items (${cols.join(",")}) VALUES (${placeholders})
+         ON CONFLICT(id) DO UPDATE SET ${col}=excluded.${col}, title=excluded.title, poster=excluded.poster, backdrop=excluded.backdrop, overview=excluded.overview, is_active=1, updated_at=datetime('now')`
+      ).bind(...vals).run();
+      inserted++;
+    } catch (e: any) { errors.push(String(e?.message ?? e).slice(0, 80)); }
+  }
+  return c.json({ ok: true, inserted, errors: errors.slice(0, 10) }, 200, GATE_RESOLVE_CORS as any);
+});
+
 export default {
   fetch: app.fetch,
   async scheduled(_event: unknown, env: Env, ctx: { waitUntil: (p: Promise<unknown>) => void }) {
