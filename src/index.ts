@@ -3396,6 +3396,39 @@ app.get("/debug/delrow", async (c) => {
   return c.json({ ok: failed.length === 0, deleted, failed }, 200, GATE_RESOLVE_CORS as any);
 });
 
+// Dead/expired host URL clear ya replace karne ke liye.
+// POST /debug/seturl  body: [{ "id": "83095:series:1:2", "host": "streamtape", "url": "" }]
+// url="" → column clear. Whitelisted host columns hi update hote hain.
+app.post("/debug/seturl", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  if (!Array.isArray(body)) return c.json({ ok: false, error: "JSON array required" }, 400);
+  const HOSTCOL: Record<string, string> = {
+    streamtape: "streamtape_url", vidmoly: "vidmoly_url", mixdrop: "mixdrop_url",
+    ufoload: "ufoload_url", abyss: "abyss_url", byse: "byse_url",
+    earnvids: "earnvids_url", doodstream: "doodstream_url",
+  };
+  let updated = 0;
+  const errors: string[] = [];
+  for (const r of body) {
+    const id = String(r?.id || "");
+    const host = String(r?.host || "").toLowerCase();
+    const url = String(r?.url ?? "");
+    const col = HOSTCOL[host];
+    if (!id || !col) { errors.push("bad row: " + JSON.stringify(r).slice(0, 70)); continue; }
+    try {
+      await c.env.DB.prepare(`UPDATE media_items SET ${col}=?, updated_at=datetime('now') WHERE id=?`).bind(url, id).run();
+      updated++;
+    } catch (e: any) {
+      errors.push(id + ": " + String(e?.message ?? e).slice(0, 80));
+    }
+  }
+  // Agar kisi row me ab koi URL hi nahi bacha, use inactive kar do.
+  try {
+    await c.env.DB.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND is_title_only=0").run();
+  } catch { /* ignore */ }
+  return c.json({ ok: errors.length === 0, updated, errors }, 200, GATE_RESOLVE_CORS as any);
+});
+
 
 // UFOload-only catalog — alag CloudStream source ke liye
 app.get("/catalog/ufoload.json", async (c) => {
