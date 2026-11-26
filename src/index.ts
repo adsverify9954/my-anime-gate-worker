@@ -3717,12 +3717,135 @@ app.post("/debug/insert", async (c) => {
   return c.json({ ok: true, inserted, errors: errors.slice(0, 10) }, 200, GATE_RESOLVE_CORS as any);
 });
 
+// ---------------------------------------------------------------------------
+// DEAD-LINK VALIDATOR: host se delete ho chuki files ke URL clear karta hai.
+// Kyun zaroori: sync listing me file na mile to row delete nahi hoti thi —
+// catalog me card dikhta rehta tha par play par "video not found" aata tha
+// (Dhamaal 4 / Never After Dark / Kaali Kheti case).
+// Rules:
+//   streamtape → /file/info, inner result[ref].status===200 && name
+//   mixdrop    → /fileinfo?ref=, success:true && result.deleted!==true
+//   ufoload    → POST /files/{id}/links, 404/410 = dead
+// Network/API error par file ko ALIVE maana jata hai (false delete nahi).
+async function validateLinks(env: Env, limit: number): Promise<{ checked: number; cleared: number; cursor: number }> {
+  const db = env.DB;
+  let cur = 0;
+  try {
+    const cr = await db.prepare("SELECT value FROM sync_state WHERE key='validate_cursor'").first<any>();
+    cur = parseInt(cr?.value || "0", 10) || 0;
+  } catch { /* ignore */ }
+  let rows: any[] = [];
+  try {
+    const { results } = await db.prepare(
+      "SELECT id, streamtape_url, mixdrop_url, ufoload_url FROM media_items WHERE is_active=1 ORDER BY id LIMIT ? OFFSET ?",
+    ).bind(limit, cur).all<any>();
+    rows = results || [];
+  } catch { /* ignore */ }
+  if (rows.length === 0 && cur > 0) {
+    cur = 0;
+    try {
+      const { results } = await db.prepare(
+        "SELECT id, streamtape_url, mixdrop_url, ufoload_url FROM media_items WHERE is_active=1 ORDER BY id LIMIT ? OFFSET 0",
+      ).bind(limit).all<any>();
+      rows = results || [];
+    } catch { /* ignore */ }
+  }
+
+  const login = String(env.STREAMTAPE_USER || env.STREAMTAPE_LOGIN || "");
+  const stKey = String(env.STREAMTAPE_KEY || "");
+  const mxEmail = String(env.MIXDROP_EMAIL || "");
+  const mxKey = String(env.MIXDROP_KEY || "");
+  const ufKey = String(env.UFOLOAD_API_KEY || env.UFOLOAD_KEY || "");
+  const stmts: any[] = [];
+  let cleared = 0;
+
+  for (const r of rows) {
+    const st = String(r.streamtape_url || "");
+    const mx = String(r.mixdrop_url || "");
+    const uf = String(r.ufoload_url || "");
+    let stDead = false, mxDead = false, ufDead = false;
+
+    if (st.includes("streamtape") && login && stKey) {
+      const ref = st.match(/\/(?:e|v|f|file)\/([A-Za-z0-9]+)/)?.[1] || "";
+      if (ref) {
+        try {
+          const j = await fetchJson(`https://api.streamtape.com/file/info?file=${ref}&login=${encodeURIComponent(login)}&key=${encodeURIComponent(stKey)}`);
+          const info = j.json?.result?.[ref];
+          // outer API status 200 hone par bhi file deleted ho sakti hai —
+          // inner file object dekhna zaroori hai (status 404 / name false).
+          if (j.ok && j.json && info) stDead = !(Number(info.status) === 200 && info.name);
+        } catch { /* unknown → alive */ }
+      }
+    }
+
+    if (mx && mxEmail && mxKey) {
+      const ref = mx.match(/\/(?:e|f|v)\/([A-Za-z0-9]+)/)?.[1]
+        || mx.match(/\/v2\/([A-Za-z0-9]+)\.mp4/)?.[1] || "";
+      if (ref) {
+        try {
+          const j = await fetchJson(`https://api.mixdrop.ag/fileinfo?ref=${ref}&email=${encodeURIComponent(mxEmail)}&key=${encodeURIComponent(mxKey)}`);
+          if (j.ok && j.json) {
+            const res = j.json.result || {};
+            if (j.json.success === true) mxDead = res.deleted === true || (res.status && !/OK/i.test(String(res.status)));
+            else if (/invalid file ref/i.test(String(res.msg || ""))) mxDead = true;
+          }
+        } catch { /* unknown → alive */ }
+      }
+    }
+
+    if (uf && ufKey) {
+      const fid = uf.match(/\/files\/([A-Za-z0-9]+)/)?.[1] || "";
+      if (fid) {
+        try {
+          const res = await fetch(`https://ufoload.com/api/v1/files/${fid}/links`, {
+            method: "POST",
+            headers: { Authorization: "Bearer " + ufKey, Accept: "application/json" },
+          });
+          if (res.status === 404 || res.status === 410) ufDead = true;
+        } catch { /* unknown → alive */ }
+      }
+    }
+
+    if (stDead) { stmts.push(db.prepare("UPDATE media_items SET streamtape_url='' WHERE id=?").bind(r.id)); cleared++; }
+    if (mxDead) { stmts.push(db.prepare("UPDATE media_items SET mixdrop_url='' WHERE id=?").bind(r.id)); cleared++; }
+    if (ufDead) { stmts.push(db.prepare("UPDATE media_items SET ufoload_url='' WHERE id=?").bind(r.id)); cleared++; }
+  }
+
+  if (stmts.length) {
+    try { await db.batch(stmts); } catch { /* ignore */ }
+    try {
+      await db.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND is_title_only=0").run();
+    } catch { /* ignore */ }
+  }
+  const next = cur + rows.length;
+  try {
+    await db.prepare("INSERT INTO sync_state (key,value) VALUES ('validate_cursor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(next)).run();
+  } catch { /* ignore */ }
+  return { checked: rows.length, cleared, cursor: next };
+}
+
+// GET /debug/validate?limit=25  — manual sweep (limit max 30; ~3 subrequests/row)
+app.get("/debug/validate", async (c) => {
+  const limit = Math.min(parseInt(c.req.query("limit") || "25", 10) || 25, 30);
+  try {
+    const r = await validateLinks(c.env, limit);
+    return c.json({ ok: true, ...r }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) {
+    return c.json({ ok: false, error: String(e?.message ?? e).slice(0, 200) }, 500);
+  }
+});
+
 export default {
   fetch: app.fetch,
   async scheduled(_event: unknown, env: Env, ctx: { waitUntil: (p: Promise<unknown>) => void }) {
     if (String(env.CRON_ENABLED ?? "true") !== "true") return;
     try {
       ctx.waitUntil(triggerSync(env));
+    } catch { /* ignore */ }
+    // Har minute 3 rows ki dead-link check — poora catalog ~1.5 ghante me sweep
+    // hota hai. Isolated try/catch: sync ko kabhi affect nahi karega.
+    try {
+      ctx.waitUntil(validateLinks(env, 3).catch(() => undefined));
     } catch { /* ignore */ }
   },
 };
