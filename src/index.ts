@@ -1440,7 +1440,7 @@ async function runSync(env: Env): Promise<number> {
   // (lastSyncAt frozen, naye uploads kabhi ingest nahi hote). Ab: cache se shuru +
   // har run sirf EK host-group ki fresh listing (round-robin) — listing per run
   // ~5-10 subrequests, run hamesha phase-4 tak pahunchta hai.
-  const LISTING_CACHE_MS = 15 * 60 * 1000;
+  const LISTING_CACHE_MS = 5 * 60 * 1000;
   const uploads: any[] = [];
   let listingFromCache = false;
   let syncCursor = 0;
