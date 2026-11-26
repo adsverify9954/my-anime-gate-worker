@@ -1412,10 +1412,17 @@ async function listMixdropUploads(env: Env, db: D1Database, cache: Map<string, n
       const title = String(f.title || "");
       let fileName: string;
       if (tmdbId != null) {
-        const ep = title.match(/[Ss](\d{1,2})[._\- ]?[Ee](\d{1,3})/)
-          ?? title.match(/\b(?:Ep?|Episode)\s*[.#_-]?\s*(\d{1,3})\b/i);
+        const ep = title.match(/[Ss](\d{1,2})[._\- ]?[Ee](\d{1,3})/);
+        const epAlt = ep ? null : title.match(/\b(?:Ep?|Episode)\s*[.#_-]?\s*(\d{1,3})\b/i);
         if (ep) {
-          const epNum = parseInt(ep[1], 10);
+          // BUG-FIX: pehle ep[1] (season) ko episode number samajh liya jaata tha
+          // — isliye MixDrop ki saari episodes "S01E01" ban jaati thin aur
+          // galat video galat episode row me chali jaati thi.
+          const seNum = parseInt(ep[1], 10) || 1;
+          const epNum = parseInt(ep[2], 10) || 1;
+          fileName = "tmdb_" + tmdbId + "_S" + String(seNum).padStart(2, "0") + "E" + String(epNum).padStart(2, "0") + ".mp4";
+        } else if (epAlt) {
+          const epNum = parseInt(epAlt[1], 10) || 1;
           fileName = "tmdb_" + tmdbId + "_S01E" + String(epNum).padStart(2, "0") + ".mp4";
         } else {
           fileName = "tmdb_" + tmdbId + ".mp4";
