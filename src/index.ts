@@ -1766,6 +1766,37 @@ async function runSync(env: Env): Promise<number> {
     if (!meta) { lastSyncErrors.push("tmdb-miss: " + upload.fileName.slice(0, 60)); continue; }
     budget--;
 
+    // AUTO-RENAME: site ke raw-naam uploads ko host par bhi tmdb_<id>_<Title>[_SxxEyy].mp4
+    // bana do. Isse naye videos ka naam Streamtape/MixDrop panel me bhi saaf rehta hai
+    // (manual bulk-rename ki zaroorat nahi padti).
+    if (!/^tmdb_\d+/i.test(String(upload.fileName || "")) && upload.id) {
+      try {
+        const cleanTitle = String(meta.title || "")
+          .replace(/[\\/:*?"<>|\r\n\t]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 70);
+        const se = meta.type === "series"
+          ? `_S${String(meta.season ?? 1).padStart(2, "0")}E${String(meta.episode ?? 1).padStart(2, "0")}`
+          : "";
+        const newName = `tmdb_${meta.tmdbId}_${cleanTitle || "Video"}${se}.mp4`;
+        if (upload.host === "streamtape") {
+          const login = String(env.STREAMTAPE_USER || env.STREAMTAPE_LOGIN || "");
+          if (login && env.STREAMTAPE_KEY) {
+            budget--;
+            await fetchJson(`https://api.streamtape.com/file/rename?file=${encodeURIComponent(String(upload.id))}&login=${encodeURIComponent(login)}&key=${encodeURIComponent(String(env.STREAMTAPE_KEY))}&name=${encodeURIComponent(newName)}`);
+          }
+        } else if (upload.host === "mixdrop") {
+          const ref = fileRefOf(upload.pageUrl);
+          if (ref && env.MIXDROP_EMAIL && env.MIXDROP_KEY) {
+            budget--;
+            await fetchJson(`https://api.mixdrop.ag/filerename?email=${encodeURIComponent(String(env.MIXDROP_EMAIL))}&key=${encodeURIComponent(String(env.MIXDROP_KEY))}&ref=${encodeURIComponent(ref)}&title=${encodeURIComponent(newName.replace(/\.mp4$/i, ""))}`);
+          }
+        }
+        upload.fileName = newName;
+      } catch { /* rename fail → sync continue */ }
+    }
+
     // Search results me genres empty hote hain — detail se bharo (category sahi ho).
     // Budget bacha ho tab hi (subrequest limit safety).
     if ((!Array.isArray(meta.genres) || meta.genres.length === 0) && budget > 8) {
