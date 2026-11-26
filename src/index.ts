@@ -3702,6 +3702,28 @@ app.get("/debug/mixrename", async (c) => {
   } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,150) }, 500); }
 });
 
+// UFOload rename: /debug/ufoname?file=<id>&name=<new name>
+app.get("/debug/ufoname", async (c) => {
+  const fid = (c.req.query("file") || "").replace(/[^A-Za-z0-9]/g, "");
+  const newName = c.req.query("name") || "";
+  const key = c.env.UFOLOAD_API_KEY || c.env.UFOLOAD_KEY || "";
+  if (!fid || !newName || !key) return c.json({ ok:false, error:"file, name, UFOLOAD key required" }, 400);
+  const tries: any[] = [];
+  for (const body of [{ name: newName }, { title: newName }]) {
+    try {
+      const r = await fetch(`https://ufoload.com/api/v1/files/${fid}`, {
+        method: "PATCH",
+        headers: { Authorization: "Bearer " + key, "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(body),
+      });
+      const text = await r.text();
+      tries.push({ body: Object.keys(body)[0], status: r.status, resp: text.slice(0, 160) });
+      if (r.ok) return c.json({ ok: true, file: fid, name: newName, tries }, 200, GATE_RESOLVE_CORS as any);
+    } catch (e: any) { tries.push({ error: String(e?.message ?? e).slice(0, 120) }); }
+  }
+  return c.json({ ok: false, file: fid, name: newName, tries }, 200, GATE_RESOLVE_CORS as any);
+});
+
 
 // Manual row insert (for episodes jinki host extraction Cloudflare IP se block hai)
 app.post("/debug/insert", async (c) => {
