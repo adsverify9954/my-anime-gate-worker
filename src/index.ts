@@ -39,6 +39,7 @@ interface Env {
   UFOLOAD_KEY?: string;
   UFOLOAD_API_KEY?: string;
   EARNVIDS_API_KEY?: string;
+  VIDARA_API_KEY?: string;
   UPLOADS_JSON?: string;
   SYNC_KEY?: string;
   ADDON_ID?: string;
@@ -71,6 +72,7 @@ interface MediaRow {
   byse_url: string;
   earnvids_url: string;
   doodstream_url: string;
+  vidara_url: string;
   is_active: number;
 }
 
@@ -87,6 +89,7 @@ const HOST_HEADERS: Record<string, Record<string, string>> = {
   abyss: { Referer: "https://player.abyssplayer.com/", Origin: "https://player.abyssplayer.com" },
   byse: { Referer: "https://bysetayico.com/", Origin: "https://bysetayico.com" },
   doodstream: { Referer: "https://doodstream.com/", Origin: "https://doodstream.com" },
+  vidara: { Referer: "https://vidara.to/", Origin: "https://vidara.to" },
 };
 
 const HOST_FIELD: Record<string, keyof MediaRow> = {
@@ -97,6 +100,7 @@ const HOST_FIELD: Record<string, keyof MediaRow> = {
   abyss: "abyss_url",
   byse: "byse_url",
   doodstream: "doodstream_url",
+  vidara: "vidara_url",
   earnvids: "earnvids_url",
 };
 
@@ -108,6 +112,7 @@ const HOST_LABEL: Record<string, string> = {
   abyss: "Abyss",
   byse: "Byse",
   doodstream: "Doodstream",
+  vidara: "Vidara",
   earnvids: "EarnVids",
 };
 
@@ -140,6 +145,7 @@ const DDL_MAIN = `
     byse_url TEXT NOT NULL DEFAULT '',
     earnvids_url TEXT NOT NULL DEFAULT '',
     doodstream_url TEXT NOT NULL DEFAULT '',
+    vidara_url TEXT NOT NULL DEFAULT '',
     is_title_only INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -184,6 +190,7 @@ const ALTER_COLUMNS: Array<[string, string]> = [
   ["media_items", "earnvids_url TEXT NOT NULL DEFAULT ''"],
   ["media_items", "is_title_only INTEGER NOT NULL DEFAULT 0"],
   ["media_items", "doodstream_url TEXT NOT NULL DEFAULT ''"],
+  ["media_items", "vidara_url TEXT NOT NULL DEFAULT ''"],
   ["media_items", "category TEXT NOT NULL DEFAULT ''"],
   ["watchlist", "media_type TEXT NOT NULL DEFAULT ''"],
   ["watchlist", "tmdb_id INTEGER NOT NULL DEFAULT 0"],
@@ -1115,9 +1122,10 @@ async function extractVixeo(inputUrl: string): Promise<string | null> {
  * hum sirf direct HLS use karte hain (ads-free native playback).
  */
 async function extractVidara(inputUrl: string): Promise<string | null> {
-  const m = String(inputUrl).match(/\/e\/([A-Za-z0-9]+)/);
+  const m = String(inputUrl).match(/\/(?:e|v)\/([A-Za-z0-9]+)|\/([A-Za-z0-9]{8,20})\/?(?:[?#]|$)/);
   if (!m) return null;
-  const id = m[1];
+  const id = String(m[1] || m[2] || "");
+  if (!id) return null;
   const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
   const body = JSON.stringify({ filecode: id, device: "desktop", codecs: ["h264", "h265", "av1"] });
   const bases: string[] = ["https://vidara.to"];
@@ -1245,6 +1253,38 @@ async function listStreamtape(env: Env) {
   return out;
 }
 
+/** Vidara API key: env secret ya D1 sync_state cfg:vidara_key. */
+async function vidaraKey(env: Env): Promise<string> {
+  if (env.VIDARA_API_KEY) return String(env.VIDARA_API_KEY);
+  try {
+    const r = await env.DB.prepare("SELECT value FROM sync_state WHERE key='cfg:vidara_key'").first<any>();
+    return String(r?.value || "");
+  } catch { return ""; }
+}
+
+/** Vidara video list — filecode + title + link (https://vidara.to/<code>). */
+async function listVidaraUploads(env: Env): Promise<any[]> {
+  const key = await vidaraKey(env);
+  if (!key) return [];
+  const out: any[] = [];
+  for (let page = 1; page <= 5; page++) {
+    const r = await fetchJson(`https://api.vidara.so/v1/video/list?api_key=${encodeURIComponent(key)}&per_page=100&page=${page}`);
+    const vids = r.json?.result?.videos;
+    if (!Array.isArray(vids) || vids.length === 0) break;
+    for (const v of vids) {
+      const code = String(v.filecode || "");
+      if (!code) continue;
+      out.push({
+        id: code, host: "vidara", fileName: String(v.title || ""),
+        size: Number(v.size) || 0, status: 200,
+        pageUrl: `https://vidara.to/${code}`,
+      });
+    }
+    if (vids.length < 100) break;
+  }
+  return out;
+}
+
 function parseUploadsJson(env: Env) {
   if (!env.UPLOADS_JSON || !env.UPLOADS_JSON.trim()) return [];
   try {
@@ -1277,6 +1317,7 @@ function detectHost(url: string): string | null {
   if (/byse|bysetayico/.test(u)) return "byse";
   if (/earnvids|morencius|dramiyos/.test(u)) return "earnvids";
   if (/doodstream|dood\.to|doodcdn|doodreels/.test(u)) return "doodstream";
+  if (/vidara\.to|vidara\.so/.test(u)) return "vidara";
   return null;
 }
 
@@ -1621,7 +1662,7 @@ async function runSync(env: Env): Promise<number> {
   const GROUPS: string[][] = [
     ["streamtape"],
     ["mixdrop"],
-    ["ufoload", "abyss", "byse", "earnvids", "doodstream"],
+    ["ufoload", "abyss", "byse", "earnvids", "doodstream", "vidara"],
   ];
   const groupNames = ["streamtape", "mixdrop", "rest"];
   let groupIdx = listingFromCache ? (listCursor % GROUPS.length) : -1;
@@ -1647,6 +1688,7 @@ async function runSync(env: Env): Promise<number> {
         else if (host === "byse") fresh.push(...(await listByseUploads(env)));
         else if (host === "earnvids") fresh.push(...(await listEarnvidsUploads(env)));
         else if (host === "doodstream") fresh.push(...(await listDoodstreamUploads(env)));
+        else if (host === "vidara") fresh.push(...(await listVidaraUploads(env)));
       } catch (e) { lastSyncErrors.push("group-list " + host + ": " + String(e).slice(0, 80)); }
     }
     for (const u of fresh) if (u.pageUrl) merged.set(u.pageUrl, u);
@@ -1660,7 +1702,7 @@ async function runSync(env: Env): Promise<number> {
       if (cd?.value && Date.now() - Number(cd.value) < 180000) mxAllowed = false;
     } catch { /* ignore */ }
     // Watchlist + DoodStream pehle (naye uploads fast process — queue me peeche na rahein)
-    const allUploads: any[] = [...(await listDoodstreamUploads(env)), ...parseUploadsJson(env), ...(await listStreamtape(env)), ...(mxAllowed ? (await listMixdropUploads(env, db, mdCache)) : []), ...(await listAbyssUploads(env)), ...(await listByseUploads(env)), ...(await listUfoloadUploads(env)), ...(await listEarnvidsUploads(env))];
+    const allUploads: any[] = [...(await listDoodstreamUploads(env)), ...parseUploadsJson(env), ...(await listStreamtape(env)), ...(mxAllowed ? (await listMixdropUploads(env, db, mdCache)) : []), ...(await listAbyssUploads(env)), ...(await listByseUploads(env)), ...(await listUfoloadUploads(env)), ...(await listEarnvidsUploads(env)), ...(await listVidaraUploads(env))];
     const seenUp = new Set<string>();
     for (const u of allUploads) {
       if (!u.pageUrl || seenUp.has(u.pageUrl)) continue;
@@ -1707,11 +1749,11 @@ async function runSync(env: Env): Promise<number> {
   const REFRESH_AFTER_MS = 6 * 60 * 60 * 1000;
   // Embed-URL hosts (streamtape/mixdrop/abyss/byse/earnvids) ka stored link stable
   // hota hai \u2014 unhe har sync me dobara extract karne ki zaroorat nahi (subrequest limit).
-  const STABLE_URL_HOSTS = new Set(["streamtape", "mixdrop", "abyss", "byse", "earnvids"]);
+  const STABLE_URL_HOSTS = new Set(["streamtape", "mixdrop", "abyss", "byse", "earnvids", "vidara"]);
   // Hosts jinke D1 me stored value = upload.pageUrl (embed/API link). Inke liye
   // naya upload aane par existing row ka URL refresh karna hota hai \u2014 warna
   // "naya video upload" row me write hi nahi hota (fast path skip).
-  const PAGE_URL_HOSTS = new Set(["streamtape", "mixdrop", "ufoload", "abyss", "byse", "earnvids"]);
+  const PAGE_URL_HOSTS = new Set(["streamtape", "mixdrop", "ufoload", "abyss", "byse", "earnvids", "vidara"]);
 
   // Phase 3: budgeted processing \u2014 D1 writes batched
   let ingested = 0;
@@ -1748,6 +1790,7 @@ async function runSync(env: Env): Promise<number> {
     const m = host === "streamtape" ? (url.match(/\/(?:e|v|f|file)\/([A-Za-z0-9]+)/)?.[1] || "")
       : host === "mixdrop" ? (url.match(/\/(?:e|f|v)\/([A-Za-z0-9]+)/)?.[1] || url.match(/\/v2\/([A-Za-z0-9]+)\.mp4/)?.[1] || "")
       : host === "ufoload" ? (url.match(/\/files\/([A-Za-z0-9]+)/)?.[1] || "")
+      : host === "vidara" ? (url.match(/vidara\.to\/([A-Za-z0-9]+)/)?.[1] || "")
       : "";
     return m ? `deadref:${host}:${m}` : "";
   };
@@ -1846,6 +1889,11 @@ async function runSync(env: Env): Promise<number> {
     valid = Boolean(upload.pageUrl);
     ready = valid;
     directUrl = upload.pageUrl;
+  } else if (upload.host === "vidara") {
+    // Vidara: pageUrl (vidara.to/<code>) store hota hai — /stream serve-time HLS resolve karta hai.
+    valid = Boolean(upload.pageUrl);
+    ready = valid;
+    directUrl = upload.pageUrl;
   } else if (upload.host === "doodstream") {
     // DoodStream: encode hone tak canplay=0 rehta hai - tab tak embed page
     // "not available" deta hai. Unready file skip karo (next sync me ready hoga).
@@ -1880,7 +1928,7 @@ async function runSync(env: Env): Promise<number> {
     // AUTO-RENAME: site ke raw-naam uploads ko host par bhi tmdb_<id>_<Title>[_SxxEyy].mp4
     // bana do. Isse naye videos ka naam Streamtape/MixDrop panel me bhi saaf rehta hai
     // (manual bulk-rename ki zaroorat nahi padti).
-    if (!/^tmdb_\d+/i.test(String(upload.fileName || "")) && upload.id) {
+    if ((upload.host === "vidara" || !/^tmdb_\d+/i.test(String(upload.fileName || ""))) && upload.id) {
       try {
         const cleanTitle = String(meta.title || "")
           .replace(/[\\/:*?"<>|\r\n\t]+/g, " ")
@@ -1902,6 +1950,13 @@ async function runSync(env: Env): Promise<number> {
           if (ref && env.MIXDROP_EMAIL && env.MIXDROP_KEY) {
             budget--;
             await fetchJson(`https://api.mixdrop.ag/filerename?email=${encodeURIComponent(String(env.MIXDROP_EMAIL))}&key=${encodeURIComponent(String(env.MIXDROP_KEY))}&ref=${encodeURIComponent(ref)}&title=${encodeURIComponent(newName.replace(/\.mp4$/i, ""))}`);
+          }
+        } else if (upload.host === "vidara") {
+          const vk = await vidaraKey(env);
+          const code = String(upload.id || "");
+          if (vk && code) {
+            budget--;
+            await fetchJson(`https://api.vidara.so/v1/video/rename?api_key=${encodeURIComponent(vk)}&filecode=${encodeURIComponent(code)}&title=${encodeURIComponent(newName.replace(/\.mp4$/i, ""))}`);
           }
         }
         upload.fileName = newName;
@@ -1930,10 +1985,10 @@ async function runSync(env: Env): Promise<number> {
     const rowCategory = meta.category;
     const baseVals = [id, meta.tmdbId, meta.type, meta.title, meta.poster, meta.backdrop, meta.overview, meta.rating,
       meta.type === "series" ? meta.season : null, meta.type === "series" ? meta.episode : null, rowCategory];
-  const allUrls = ["streamtape", "vidmoly", "mixdrop", "ufoload", "abyss", "byse", "earnvids", "doodstream"].map((h) => (h === upload.host ? hostUrl : ""));
+  const allUrls = ["streamtape", "vidmoly", "mixdrop", "ufoload", "abyss", "byse", "earnvids", "doodstream", "vidara"].map((h) => (h === upload.host ? hostUrl : ""));
     stmts.push(db.prepare(
-      `INSERT INTO media_items (id, tmdb_id, type, title, poster, backdrop, overview, rating, season, episode, category, streamtape_url, vidmoly_url, mixdrop_url, ufoload_url, abyss_url, byse_url, earnvids_url, doodstream_url, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `INSERT INTO media_items (id, tmdb_id, type, title, poster, backdrop, overview, rating, season, episode, category, streamtape_url, vidmoly_url, mixdrop_url, ufoload_url, abyss_url, byse_url, earnvids_url, doodstream_url, vidara_url, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, poster=excluded.poster, backdrop=excluded.backdrop, overview=excluded.overview, rating=excluded.rating,
          season=COALESCE(excluded.season, media_items.season), episode=COALESCE(excluded.episode, media_items.episode),
@@ -1946,8 +2001,9 @@ async function runSync(env: Env): Promise<number> {
          byse_url=COALESCE(nullif(excluded.byse_url,''), media_items.byse_url),
          earnvids_url=COALESCE(nullif(excluded.earnvids_url,''), media_items.earnvids_url),
          doodstream_url=COALESCE(nullif(excluded.doodstream_url,''), media_items.doodstream_url),
+         vidara_url=COALESCE(nullif(excluded.vidara_url,''), media_items.vidara_url),
          is_active=1, updated_at=datetime('now')`,
-    ).bind(...baseVals, allUrls[0], allUrls[1], allUrls[2], allUrls[3], allUrls[4], allUrls[5], allUrls[6], allUrls[7]));
+    ).bind(...baseVals, allUrls[0], allUrls[1], allUrls[2], allUrls[3], allUrls[4], allUrls[5], allUrls[6], allUrls[7], allUrls[8]));
     ingested++;
     processedThisRun++;
     markIngested(upload.pageUrl, id, uploadRef);
@@ -1973,7 +2029,7 @@ async function runSync(env: Env): Promise<number> {
 
   // Phase 5: cleanup + state (batched)
   const cleanup: any[] = [];
-  cleanup.push(db.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND is_title_only=0"));
+  cleanup.push(db.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND is_title_only=0"));
   cleanup.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncAt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(new Date().toISOString()));
   cleanup.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncCount',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(ingested)));
   cleanup.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncErrors',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(lastSyncErrors).slice(0, 4000)));
@@ -2081,7 +2137,7 @@ app.get("/debug/sync", async (c) => {
 app.get("/debug/state", async (c) => {
   try {
     await ensureSchema(c.env.DB);
-    const rows = await c.env.DB.prepare("SELECT key, value FROM sync_state WHERE key NOT LIKE '%cache%'").all<any>();
+    const rows = await c.env.DB.prepare("SELECT key, value FROM sync_state WHERE key NOT LIKE '%cache%' AND key NOT LIKE 'cfg:%'").all<any>();
     const out: Record<string, string> = {};
     for (const r of (rows.results || [])) out[String(r.key)] = String(r.value).slice(0, 400);
     return c.json(out, 200, GATE_RESOLVE_CORS as any);
@@ -2142,10 +2198,15 @@ app.get("/api/stream/:id", async (c) => {
     if (HIDDEN_HOSTS.has(host)) continue; // native playback impossible \u2014 hidden per owner decision
     const url = item[HOST_FIELD[host]];
     if (!url) continue;
-    const playUrl = host === "streamtape" ? toStreamtapeProxy(new URL(c.req.url).origin, url) : url;
+    let playUrl = host === "streamtape" ? toStreamtapeProxy(new URL(c.req.url).origin, url) : url;
+    let webview = false;
+    if (host === "vidara") {
+      const direct = await extractVidara(url).catch(() => null);
+      if (direct) playUrl = direct; else webview = true;
+    }
     streams.push({
       name: `The Gate \u00B7 ${HOST_LABEL[host]}`, title: item.title, host,
-      url: playUrl, webview: false,
+      url: playUrl, webview,
       behaviorHints: { proxyHeaders: { request: headersForHost(c.env, host) } },
     });
   }
@@ -2318,6 +2379,12 @@ app.get("/stream/:type/:id.json", async (c) => {
             ?? url.match(/(?:mixdrop|mxdrop)[^/]*\/e\/([A-Za-z0-9]+)/i)?.[1];
           if (ref) finalUrl = "https://mxdrop.click/e/" + ref;
           useWebview = true;
+        }
+        if (host === "vidara") {
+          // Ads-free: /api/stream se fresh HLS master.m3u8 → native player.
+          const direct = await extractVidara(url).catch(() => null);
+          if (direct) { finalUrl = direct; useWebview = false; }
+          else { finalUrl = url; useWebview = true; }
         }
         if (host === "earnvids") {
           // EarnVids: fresh direct_link \u2192 HLS master.m3u8 \u2192 NATIVE player (ExoPlayer/MPVKit),
@@ -2511,6 +2578,7 @@ app.get("/debug/discovery", async (c) => {
       ...(await listUfoloadUploads(c.env)),
       ...(await listEarnvidsUploads(c.env)),
       ...(await listDoodstreamUploads(c.env)),
+      ...(await listVidaraUploads(c.env)),
       ...parseUploadsJson(c.env),
     ];
     // Existing rows me URL columns (host-specific) \u2014 upload ki pageUrl/embed inme match karna chahiye.
@@ -3549,7 +3617,7 @@ app.post("/debug/seturl", async (c) => {
   const HOSTCOL: Record<string, string> = {
     streamtape: "streamtape_url", vidmoly: "vidmoly_url", mixdrop: "mixdrop_url",
     ufoload: "ufoload_url", abyss: "abyss_url", byse: "byse_url",
-    earnvids: "earnvids_url", doodstream: "doodstream_url",
+    earnvids: "earnvids_url", doodstream: "doodstream_url", vidara: "vidara_url",
   };
   let updated = 0;
   const errors: string[] = [];
@@ -3568,7 +3636,7 @@ app.post("/debug/seturl", async (c) => {
   }
   // Agar kisi row me ab koi URL hi nahi bacha, use inactive kar do.
   try {
-    await c.env.DB.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND is_title_only=0").run();
+    await c.env.DB.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND is_title_only=0").run();
   } catch { /* ignore */ }
   return c.json({ ok: errors.length === 0, updated, errors }, 200, GATE_RESOLVE_CORS as any);
 });
@@ -3644,7 +3712,7 @@ app.get("/debug/cleanup-dead", async (c) => {
         }
       } catch { /* skip network error */ }
     }
-    await c.env.DB.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND is_title_only=0").run();
+    await c.env.DB.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND is_title_only=0").run();
     return c.json({ ok:true, checked, dead }, 200, GATE_RESOLVE_CORS as any);
   } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,200) }); }
 });
@@ -3800,6 +3868,18 @@ app.get("/debug/tmdb", async (c) => {
   return c.json({ ok: !!m, input: name, title: p.title, tmdbId: m?.tmdbId ?? null, type: m?.type ?? null, name: m?.name ?? null }, 200, GATE_RESOLVE_CORS as any);
 });
 
+// Vidara API key save: /debug/setvidara?key=<api key>
+app.get("/debug/setvidara", async (c) => {
+  const key = String(c.req.query("key") || "").trim();
+  if (!/^[a-f0-9]{32,80}$/i.test(key)) return c.json({ ok: false, error: "valid api key required" }, 400);
+  try {
+    await c.env.DB.prepare("INSERT INTO sync_state (key,value) VALUES ('cfg:vidara_key',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(key).run();
+    return c.json({ ok: true, stored: true, videos_hint: "run /debug/runsync" }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) {
+    return c.json({ ok: false, error: String(e?.message ?? e).slice(0, 150) }, 500);
+  }
+});
+
 // Vixeo/Vidsonic direct-link test: /debug/vixeo?url=<embed url>
 app.get("/debug/vixeo", async (c) => {
   const target = gateParseExternalUrl(c.req.query("url") || "");
@@ -3869,7 +3949,7 @@ app.post("/debug/insert", async (c) => {
   const HOSTCOL: Record<string, string> = {
     streamtape: "streamtape_url", vidmoly: "vidmoly_url", mixdrop: "mixdrop_url",
     ufoload: "ufoload_url", abyss: "abyss_url", byse: "byse_url",
-    earnvids: "earnvids_url", doodstream: "doodstream_url",
+    earnvids: "earnvids_url", doodstream: "doodstream_url", vidara: "vidara_url",
   };
   let inserted = 0; const errors: string[] = [];
   const key = c.env.TMDB_API_KEY;
@@ -3927,7 +4007,7 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
   let rows: any[] = [];
   try {
     const { results } = await db.prepare(
-      "SELECT id, streamtape_url, mixdrop_url, ufoload_url FROM media_items WHERE is_active=1 ORDER BY id LIMIT ? OFFSET ?",
+      "SELECT id, streamtape_url, mixdrop_url, ufoload_url, vidara_url FROM media_items WHERE is_active=1 ORDER BY id LIMIT ? OFFSET ?",
     ).bind(limit, cur).all<any>();
     rows = results || [];
   } catch { /* ignore */ }
@@ -3935,7 +4015,7 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
     cur = 0;
     try {
       const { results } = await db.prepare(
-        "SELECT id, streamtape_url, mixdrop_url, ufoload_url FROM media_items WHERE is_active=1 ORDER BY id LIMIT ? OFFSET 0",
+        "SELECT id, streamtape_url, mixdrop_url, ufoload_url, vidara_url FROM media_items WHERE is_active=1 ORDER BY id LIMIT ? OFFSET 0",
       ).bind(limit).all<any>();
       rows = results || [];
     } catch { /* ignore */ }
@@ -3963,9 +4043,10 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
     const st = String(r.streamtape_url || "");
     const mx = String(r.mixdrop_url || "");
     const uf = String(r.ufoload_url || "");
-    let stDead = false, mxDead = false, ufDead = false;
+    const vd = String(r.vidara_url || "");
+    let stDead = false, mxDead = false, ufDead = false, vdDead = false;
     let stMismatch = false, mxMismatch = false;
-    let stRef = "", mxRef = "", ufId = "";
+    let stRef = "", mxRef = "", ufId = "", vdRef = "";
 
     if (st.includes("streamtape") && login && stKey) {
       const ref = st.match(/\/(?:e|v|f|file)\/([A-Za-z0-9]+)/)?.[1] || "";
@@ -4022,15 +4103,35 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
       }
     }
 
+    if (vd) {
+      const code = vd.match(/vidara\.[a-z]+\/([A-Za-z0-9]+)/i)?.[1] || "";
+      if (code) {
+        vdRef = code;
+        try {
+          const vk = await vidaraKey(env);
+          if (vk) {
+            const j = await fetchJson(`https://api.vidara.so/v1/video/info?api_key=${encodeURIComponent(vk)}&filecode=${encodeURIComponent(code)}`);
+            const arr = j.json?.result;
+            const row = Array.isArray(arr) ? arr[0] : arr;
+            if (j.ok && j.json && row) {
+              vdDead = !(String(row.status || "") === "active" && Number(row.file_active) === 1);
+            }
+          }
+        } catch { /* unknown → alive */ }
+      }
+    }
+
     // Dead ref ko permanent blocklist me daalo — sync stale listing cache se bhi
     // deleted file dobara ingest na kare (Dhamaal 4 ghost row ka root fix).
     if (stDead && stRef) stmts.push(db.prepare("INSERT INTO sync_state (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind("deadref:streamtape:" + stRef, "1"));
     if (mxDead && mxRef) stmts.push(db.prepare("INSERT INTO sync_state (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind("deadref:mixdrop:" + mxRef, "1"));
     if (ufDead && ufId) stmts.push(db.prepare("INSERT INTO sync_state (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind("deadref:ufoload:" + ufId, "1"));
+    if (vdDead && vdRef) stmts.push(db.prepare("INSERT INTO sync_state (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind("deadref:vidara:" + vdRef, "1"));
 
     if (stDead) { stmts.push(db.prepare("UPDATE media_items SET streamtape_url='' WHERE id=?").bind(r.id)); cleared++; }
     if (mxDead) { stmts.push(db.prepare("UPDATE media_items SET mixdrop_url='' WHERE id=?").bind(r.id)); cleared++; }
     if (ufDead) { stmts.push(db.prepare("UPDATE media_items SET ufoload_url='' WHERE id=?").bind(r.id)); cleared++; }
+    if (vdDead) { stmts.push(db.prepare("UPDATE media_items SET vidara_url='' WHERE id=?").bind(r.id)); cleared++; }
     // File alive hai par kisi doosre row ki hai (cross-link) → URL clear karo.
     // Sync us file ko uske sahi row me dubara assign kar dega.
     if (stMismatch) { stmts.push(db.prepare("UPDATE media_items SET streamtape_url='' WHERE id=?").bind(r.id)); cleared++; }
@@ -4040,7 +4141,7 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
   if (stmts.length) {
     try { await db.batch(stmts); } catch { /* ignore */ }
     try {
-      await db.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND is_title_only=0").run();
+      await db.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND is_title_only=0").run();
     } catch { /* ignore */ }
   }
   const next = cur + rows.length;
