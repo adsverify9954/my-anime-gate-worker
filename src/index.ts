@@ -2030,6 +2030,9 @@ async function runSync(env: Env): Promise<number> {
   // Phase 5: cleanup + state (batched)
   const cleanup: any[] = [];
   cleanup.push(db.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND is_title_only=0"));
+  // REACTIVATION: deleted-then-reuploaded videos (Streamtape mistake ke baad Vidara par
+  // daale gaye) — koi bhi live URL ho to row wapas active karo.
+  cleanup.push(db.prepare("UPDATE media_items SET is_active=1, updated_at=datetime('now') WHERE is_active=0 AND is_title_only=0 AND (streamtape_url<>'' OR vidmoly_url<>'' OR mixdrop_url<>'' OR ufoload_url<>'' OR abyss_url<>'' OR byse_url<>'' OR earnvids_url<>'' OR doodstream_url<>'' OR vidara_url<>'')"));
   cleanup.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncAt',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(new Date().toISOString()));
   cleanup.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncCount',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(String(ingested)));
   cleanup.push(db.prepare("INSERT INTO sync_state (key,value) VALUES ('lastSyncErrors',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(JSON.stringify(lastSyncErrors).slice(0, 4000)));
