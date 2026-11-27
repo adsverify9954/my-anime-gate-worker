@@ -40,6 +40,7 @@ interface Env {
   UFOLOAD_API_KEY?: string;
   EARNVIDS_API_KEY?: string;
   VIDARA_API_KEY?: string;
+  LULUSTREAM_API_KEY?: string;
   UPLOADS_JSON?: string;
   SYNC_KEY?: string;
   ADDON_ID?: string;
@@ -73,6 +74,7 @@ interface MediaRow {
   earnvids_url: string;
   doodstream_url: string;
   vidara_url: string;
+  lulustream_url: string;
   is_active: number;
 }
 
@@ -90,6 +92,7 @@ const HOST_HEADERS: Record<string, Record<string, string>> = {
   byse: { Referer: "https://bysetayico.com/", Origin: "https://bysetayico.com" },
   doodstream: { Referer: "https://doodstream.com/", Origin: "https://doodstream.com" },
   vidara: { Referer: "https://vidara.to/", Origin: "https://vidara.to" },
+  lulustream: { Referer: "https://lulustream.com/", Origin: "https://lulustream.com" },
 };
 
 const HOST_FIELD: Record<string, keyof MediaRow> = {
@@ -101,6 +104,7 @@ const HOST_FIELD: Record<string, keyof MediaRow> = {
   byse: "byse_url",
   doodstream: "doodstream_url",
   vidara: "vidara_url",
+  lulustream: "lulustream_url",
   earnvids: "earnvids_url",
 };
 
@@ -113,6 +117,7 @@ const HOST_LABEL: Record<string, string> = {
   byse: "Byse",
   doodstream: "Doodstream",
   vidara: "Vidara",
+  lulustream: "LuluStream",
   earnvids: "EarnVids",
 };
 
@@ -122,7 +127,7 @@ const HOST_LABEL: Record<string, string> = {
 // so native playback is impossible and everything would need the WebView +
 // ads. Per owner decision the catalog serves ONLY native hosts
 // (Streamtape/Vidmoly/UFOload/MixDrop) \u2014 100% native playback, zero ads.
-const HIDDEN_HOSTS = new Set(["abyss", "byse"]);
+const HIDDEN_HOSTS = new Set(["abyss"]);
 
 const DDL_MAIN = `
   CREATE TABLE IF NOT EXISTS media_items (
@@ -146,6 +151,7 @@ const DDL_MAIN = `
     earnvids_url TEXT NOT NULL DEFAULT '',
     doodstream_url TEXT NOT NULL DEFAULT '',
     vidara_url TEXT NOT NULL DEFAULT '',
+    lulustream_url TEXT NOT NULL DEFAULT '',
     is_title_only INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -191,6 +197,7 @@ const ALTER_COLUMNS: Array<[string, string]> = [
   ["media_items", "is_title_only INTEGER NOT NULL DEFAULT 0"],
   ["media_items", "doodstream_url TEXT NOT NULL DEFAULT ''"],
   ["media_items", "vidara_url TEXT NOT NULL DEFAULT ''"],
+  ["media_items", "lulustream_url TEXT NOT NULL DEFAULT ''"],
   ["media_items", "category TEXT NOT NULL DEFAULT ''"],
   ["watchlist", "media_type TEXT NOT NULL DEFAULT ''"],
   ["watchlist", "tmdb_id INTEGER NOT NULL DEFAULT 0"],
@@ -1253,6 +1260,47 @@ async function listStreamtape(env: Env) {
   return out;
 }
 
+/** LuluStream API key: env secret ya D1 sync_state cfg:lulu_key. */
+async function luluKey(env: Env): Promise<string> {
+  if (env.LULUSTREAM_API_KEY) return String(env.LULUSTREAM_API_KEY);
+  try {
+    const r = await env.DB.prepare("SELECT value FROM sync_state WHERE key='cfg:lulu_key'").first<any>();
+    return String(r?.value || "");
+  } catch { return ""; }
+}
+
+/** Byse API key: env secret ya D1 sync_state cfg:byse_key. */
+async function byseKey(env: Env): Promise<string> {
+  if (env.BYSE_API_KEY) return String(env.BYSE_API_KEY);
+  try {
+    const r = await env.DB.prepare("SELECT value FROM sync_state WHERE key='cfg:byse_key'").first<any>();
+    return String(r?.value || "");
+  } catch { return ""; }
+}
+
+/** LuluStream video list — API at api.lulustream.com (embed link lplaygo.com/<code>). */
+async function listLulustreamUploads(env: Env): Promise<any[]> {
+  const key = await luluKey(env);
+  if (!key) return [];
+  const out: any[] = [];
+  for (let page = 1; page <= 5; page++) {
+    const r = await fetchJson(`https://api.lulustream.com/api/file/list?key=${encodeURIComponent(key)}&per_page=100&page=${page}`);
+    const files = r.json?.result?.files;
+    if (!Array.isArray(files) || files.length === 0) break;
+    for (const f of files) {
+      const code = String(f.file_code || f.filecode || "");
+      if (!code) continue;
+      out.push({
+        id: code, host: "lulustream", fileName: String(f.title || f.name || ""),
+        size: Number(f.size) || 0, status: 200,
+        pageUrl: `https://lplaygo.com/e/${code}`,
+      });
+    }
+    if (files.length < 100) break;
+  }
+  return out;
+}
+
 /** Vidara API key: env secret ya D1 sync_state cfg:vidara_key. */
 async function vidaraKey(env: Env): Promise<string> {
   if (env.VIDARA_API_KEY) return String(env.VIDARA_API_KEY);
@@ -1318,6 +1366,7 @@ function detectHost(url: string): string | null {
   if (/earnvids|morencius|dramiyos/.test(u)) return "earnvids";
   if (/doodstream|dood\.to|doodcdn|doodreels/.test(u)) return "doodstream";
   if (/vidara\.to|vidara\.so/.test(u)) return "vidara";
+  if (/lulustream|lplaygo/.test(u)) return "lulustream";
   return null;
 }
 
@@ -1383,8 +1432,9 @@ async function listAbyssUploads(env: Env): Promise<any[]> {
 // Byse (filemoon-style): folder/list (traversal) + file/list pagination.
 // Embed page: https://api.byse.sx/e/{file_code} (HTML5 player \u2014 WebView me chalta hai).
 async function listByseUploads(env: Env): Promise<any[]> {
-  if (!env.BYSE_API_KEY) return [];
-  const key = encodeURIComponent(env.BYSE_API_KEY);
+  const bkeyRaw = await byseKey(env);
+  if (!bkeyRaw) return [];
+  const key = encodeURIComponent(bkeyRaw);
   const out: any[] = [];
   const seen = new Set<string>();
 
@@ -1662,7 +1712,7 @@ async function runSync(env: Env): Promise<number> {
   const GROUPS: string[][] = [
     ["streamtape"],
     ["mixdrop"],
-    ["ufoload", "abyss", "byse", "earnvids", "doodstream", "vidara"],
+    ["ufoload", "abyss", "byse", "earnvids", "doodstream", "vidara", "lulustream"],
   ];
   const groupNames = ["streamtape", "mixdrop", "rest"];
   let groupIdx = listingFromCache ? (listCursor % GROUPS.length) : -1;
@@ -1689,6 +1739,7 @@ async function runSync(env: Env): Promise<number> {
         else if (host === "earnvids") fresh.push(...(await listEarnvidsUploads(env)));
         else if (host === "doodstream") fresh.push(...(await listDoodstreamUploads(env)));
         else if (host === "vidara") fresh.push(...(await listVidaraUploads(env)));
+        else if (host === "lulustream") fresh.push(...(await listLulustreamUploads(env)));
       } catch (e) { lastSyncErrors.push("group-list " + host + ": " + String(e).slice(0, 80)); }
     }
     for (const u of fresh) if (u.pageUrl) merged.set(u.pageUrl, u);
@@ -1702,7 +1753,7 @@ async function runSync(env: Env): Promise<number> {
       if (cd?.value && Date.now() - Number(cd.value) < 180000) mxAllowed = false;
     } catch { /* ignore */ }
     // Watchlist + DoodStream pehle (naye uploads fast process — queue me peeche na rahein)
-    const allUploads: any[] = [...(await listDoodstreamUploads(env)), ...parseUploadsJson(env), ...(await listStreamtape(env)), ...(mxAllowed ? (await listMixdropUploads(env, db, mdCache)) : []), ...(await listAbyssUploads(env)), ...(await listByseUploads(env)), ...(await listUfoloadUploads(env)), ...(await listEarnvidsUploads(env)), ...(await listVidaraUploads(env))];
+    const allUploads: any[] = [...(await listDoodstreamUploads(env)), ...parseUploadsJson(env), ...(await listStreamtape(env)), ...(mxAllowed ? (await listMixdropUploads(env, db, mdCache)) : []), ...(await listAbyssUploads(env)), ...(await listByseUploads(env)), ...(await listUfoloadUploads(env)), ...(await listEarnvidsUploads(env)), ...(await listVidaraUploads(env)), ...(await listLulustreamUploads(env))];
     const seenUp = new Set<string>();
     for (const u of allUploads) {
       if (!u.pageUrl || seenUp.has(u.pageUrl)) continue;
@@ -1749,11 +1800,11 @@ async function runSync(env: Env): Promise<number> {
   const REFRESH_AFTER_MS = 6 * 60 * 60 * 1000;
   // Embed-URL hosts (streamtape/mixdrop/abyss/byse/earnvids) ka stored link stable
   // hota hai \u2014 unhe har sync me dobara extract karne ki zaroorat nahi (subrequest limit).
-  const STABLE_URL_HOSTS = new Set(["streamtape", "mixdrop", "abyss", "byse", "earnvids", "vidara"]);
+  const STABLE_URL_HOSTS = new Set(["streamtape", "mixdrop", "abyss", "byse", "earnvids", "vidara", "lulustream"]);
   // Hosts jinke D1 me stored value = upload.pageUrl (embed/API link). Inke liye
   // naya upload aane par existing row ka URL refresh karna hota hai \u2014 warna
   // "naya video upload" row me write hi nahi hota (fast path skip).
-  const PAGE_URL_HOSTS = new Set(["streamtape", "mixdrop", "ufoload", "abyss", "byse", "earnvids", "vidara"]);
+  const PAGE_URL_HOSTS = new Set(["streamtape", "mixdrop", "ufoload", "abyss", "byse", "earnvids", "vidara", "lulustream"]);
 
   // Phase 3: budgeted processing \u2014 D1 writes batched
   let ingested = 0;
@@ -1894,6 +1945,11 @@ async function runSync(env: Env): Promise<number> {
     valid = Boolean(upload.pageUrl);
     ready = valid;
     directUrl = upload.pageUrl;
+  } else if (upload.host === "lulustream") {
+    // LuluStream: embed player URL (lplaygo.com/e/<code>) — WebView playback.
+    valid = Boolean(upload.pageUrl);
+    ready = valid;
+    directUrl = upload.pageUrl;
   } else if (upload.host === "doodstream") {
     // DoodStream: encode hone tak canplay=0 rehta hai - tab tak embed page
     // "not available" deta hai. Unready file skip karo (next sync me ready hoga).
@@ -1928,7 +1984,7 @@ async function runSync(env: Env): Promise<number> {
     // AUTO-RENAME: site ke raw-naam uploads ko host par bhi tmdb_<id>_<Title>[_SxxEyy].mp4
     // bana do. Isse naye videos ka naam Streamtape/MixDrop panel me bhi saaf rehta hai
     // (manual bulk-rename ki zaroorat nahi padti).
-    if ((upload.host === "vidara" || !/^tmdb_\d+/i.test(String(upload.fileName || ""))) && upload.id) {
+    if ((upload.host === "vidara" || upload.host === "lulustream" || !/^tmdb_\d+/i.test(String(upload.fileName || ""))) && upload.id) {
       try {
         const cleanTitle = String(meta.title || "")
           .replace(/[\\/:*?"<>|\r\n\t]+/g, " ")
@@ -1950,6 +2006,13 @@ async function runSync(env: Env): Promise<number> {
           if (ref && env.MIXDROP_EMAIL && env.MIXDROP_KEY) {
             budget--;
             await fetchJson(`https://api.mixdrop.ag/filerename?email=${encodeURIComponent(String(env.MIXDROP_EMAIL))}&key=${encodeURIComponent(String(env.MIXDROP_KEY))}&ref=${encodeURIComponent(ref)}&title=${encodeURIComponent(newName.replace(/\.mp4$/i, ""))}`);
+          }
+        } else if (upload.host === "lulustream") {
+          const lk = await luluKey(env);
+          const code = String(upload.id || "");
+          if (lk && code) {
+            budget--;
+            await fetchJson(`https://api.lulustream.com/api/file/edit?key=${encodeURIComponent(lk)}&file_code=${encodeURIComponent(code)}&file_title=${encodeURIComponent(newName)}`);
           }
         } else if (upload.host === "vidara") {
           const vk = await vidaraKey(env);
@@ -1985,10 +2048,10 @@ async function runSync(env: Env): Promise<number> {
     const rowCategory = meta.category;
     const baseVals = [id, meta.tmdbId, meta.type, meta.title, meta.poster, meta.backdrop, meta.overview, meta.rating,
       meta.type === "series" ? meta.season : null, meta.type === "series" ? meta.episode : null, rowCategory];
-  const allUrls = ["streamtape", "vidmoly", "mixdrop", "ufoload", "abyss", "byse", "earnvids", "doodstream", "vidara"].map((h) => (h === upload.host ? hostUrl : ""));
+  const allUrls = ["streamtape", "vidmoly", "mixdrop", "ufoload", "abyss", "byse", "earnvids", "doodstream", "vidara", "lulustream"].map((h) => (h === upload.host ? hostUrl : ""));
     stmts.push(db.prepare(
-      `INSERT INTO media_items (id, tmdb_id, type, title, poster, backdrop, overview, rating, season, episode, category, streamtape_url, vidmoly_url, mixdrop_url, ufoload_url, abyss_url, byse_url, earnvids_url, doodstream_url, vidara_url, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `INSERT INTO media_items (id, tmdb_id, type, title, poster, backdrop, overview, rating, season, episode, category, streamtape_url, vidmoly_url, mixdrop_url, ufoload_url, abyss_url, byse_url, earnvids_url, doodstream_url, vidara_url, lulustream_url, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, poster=excluded.poster, backdrop=excluded.backdrop, overview=excluded.overview, rating=excluded.rating,
          season=COALESCE(excluded.season, media_items.season), episode=COALESCE(excluded.episode, media_items.episode),
@@ -2002,8 +2065,9 @@ async function runSync(env: Env): Promise<number> {
          earnvids_url=COALESCE(nullif(excluded.earnvids_url,''), media_items.earnvids_url),
          doodstream_url=COALESCE(nullif(excluded.doodstream_url,''), media_items.doodstream_url),
          vidara_url=COALESCE(nullif(excluded.vidara_url,''), media_items.vidara_url),
+         lulustream_url=COALESCE(nullif(excluded.lulustream_url,''), media_items.lulustream_url),
          is_active=1, updated_at=datetime('now')`,
-    ).bind(...baseVals, allUrls[0], allUrls[1], allUrls[2], allUrls[3], allUrls[4], allUrls[5], allUrls[6], allUrls[7], allUrls[8]));
+    ).bind(...baseVals, allUrls[0], allUrls[1], allUrls[2], allUrls[3], allUrls[4], allUrls[5], allUrls[6], allUrls[7], allUrls[8], allUrls[9]));
     ingested++;
     processedThisRun++;
     markIngested(upload.pageUrl, id, uploadRef);
@@ -2029,7 +2093,7 @@ async function runSync(env: Env): Promise<number> {
 
   // Phase 5: cleanup + state (batched)
   const cleanup: any[] = [];
-  cleanup.push(db.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND is_title_only=0"));
+  cleanup.push(db.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND lulustream_url='' AND is_title_only=0"));
   // REACTIVATION: deleted-then-reuploaded videos (Streamtape mistake ke baad Vidara par
   // daale gaye) — koi bhi live URL ho to row wapas active karo.
   cleanup.push(db.prepare("UPDATE media_items SET is_active=1, updated_at=datetime('now') WHERE is_active=0 AND is_title_only=0 AND (streamtape_url<>'' OR vidmoly_url<>'' OR mixdrop_url<>'' OR ufoload_url<>'' OR abyss_url<>'' OR byse_url<>'' OR earnvids_url<>'' OR doodstream_url<>'' OR vidara_url<>'')"));
@@ -2207,6 +2271,7 @@ app.get("/api/stream/:id", async (c) => {
       const direct = await extractVidara(url).catch(() => null);
       if (direct) playUrl = direct; else webview = true;
     }
+    if (host === "lulustream") webview = true;
     streams.push({
       name: `The Gate \u00B7 ${HOST_LABEL[host]}`, title: item.title, host,
       url: playUrl, webview,
@@ -2389,6 +2454,11 @@ app.get("/stream/:type/:id.json", async (c) => {
           if (direct) { finalUrl = direct; useWebview = false; }
           else { finalUrl = url; useWebview = true; }
         }
+        if (host === "lulustream") {
+          // Direct HLS browser-locked hai (non-browser clients 403) — embed player WebView.
+          finalUrl = url;
+          useWebview = true;
+        }
         if (host === "earnvids") {
           // EarnVids: fresh direct_link \u2192 HLS master.m3u8 \u2192 NATIVE player (ExoPlayer/MPVKit),
           // zero ads, koi WebView nahi. HLS cross-IP playable hai (verified 2026-11-10:
@@ -2456,7 +2526,7 @@ app.get("/stream/:type/:id.json", async (c) => {
           const byRef = url.match(/\/(?:e|f|v)\/([A-Za-z0-9]+)/i)?.[1];
           if (byRef) {
             try {
-              const dom = await fetchJson("https://api.byse.sx/get/domain?key=" + encodeURIComponent(c.env.BYSE_API_KEY ?? ""));
+              const dom = await fetchJson("https://api.byse.sx/get/domain?key=" + encodeURIComponent(await byseKey(c.env)));
               const nd = dom.json?.embed_domain || dom.json?.new_domain || "";
               const host = nd.replace(/^https?:\/\//, "").replace(/\/$/, "");
               if (host) {
@@ -2582,6 +2652,7 @@ app.get("/debug/discovery", async (c) => {
       ...(await listEarnvidsUploads(c.env)),
       ...(await listDoodstreamUploads(c.env)),
       ...(await listVidaraUploads(c.env)),
+      ...(await listLulustreamUploads(c.env)),
       ...parseUploadsJson(c.env),
     ];
     // Existing rows me URL columns (host-specific) \u2014 upload ki pageUrl/embed inme match karna chahiye.
@@ -3620,7 +3691,7 @@ app.post("/debug/seturl", async (c) => {
   const HOSTCOL: Record<string, string> = {
     streamtape: "streamtape_url", vidmoly: "vidmoly_url", mixdrop: "mixdrop_url",
     ufoload: "ufoload_url", abyss: "abyss_url", byse: "byse_url",
-    earnvids: "earnvids_url", doodstream: "doodstream_url", vidara: "vidara_url",
+    earnvids: "earnvids_url", doodstream: "doodstream_url", vidara: "vidara_url", lulustream: "lulustream_url",
   };
   let updated = 0;
   const errors: string[] = [];
@@ -3639,7 +3710,7 @@ app.post("/debug/seturl", async (c) => {
   }
   // Agar kisi row me ab koi URL hi nahi bacha, use inactive kar do.
   try {
-    await c.env.DB.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND is_title_only=0").run();
+    await c.env.DB.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND lulustream_url='' AND is_title_only=0").run();
   } catch { /* ignore */ }
   return c.json({ ok: errors.length === 0, updated, errors }, 200, GATE_RESOLVE_CORS as any);
 });
@@ -3715,7 +3786,7 @@ app.get("/debug/cleanup-dead", async (c) => {
         }
       } catch { /* skip network error */ }
     }
-    await c.env.DB.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND is_title_only=0").run();
+    await c.env.DB.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND lulustream_url='' AND is_title_only=0").run();
     return c.json({ ok:true, checked, dead }, 200, GATE_RESOLVE_CORS as any);
   } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,200) }); }
 });
@@ -3871,6 +3942,26 @@ app.get("/debug/tmdb", async (c) => {
   return c.json({ ok: !!m, input: name, title: p.title, tmdbId: m?.tmdbId ?? null, type: m?.type ?? null, name: m?.name ?? null }, 200, GATE_RESOLVE_CORS as any);
 });
 
+// LuluStream API key save: /debug/setlulu?key=<api key>
+app.get("/debug/setlulu", async (c) => {
+  const key = String(c.req.query("key") || "").trim();
+  if (!/^[A-Za-z0-9]{12,80}$/.test(key)) return c.json({ ok: false, error: "valid api key required" }, 400);
+  try {
+    await c.env.DB.prepare("INSERT INTO sync_state (key,value) VALUES ('cfg:lulu_key',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(key).run();
+    return c.json({ ok: true, stored: true }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) { return c.json({ ok: false, error: String(e?.message ?? e).slice(0, 150) }, 500); }
+});
+
+// Byse API key save: /debug/setbyse?key=<api key>
+app.get("/debug/setbyse", async (c) => {
+  const key = String(c.req.query("key") || "").trim();
+  if (!/^[A-Za-z0-9]{12,80}$/.test(key)) return c.json({ ok: false, error: "valid api key required" }, 400);
+  try {
+    await c.env.DB.prepare("INSERT INTO sync_state (key,value) VALUES ('cfg:byse_key',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(key).run();
+    return c.json({ ok: true, stored: true }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) { return c.json({ ok: false, error: String(e?.message ?? e).slice(0, 150) }, 500); }
+});
+
 // Vidara API key save: /debug/setvidara?key=<api key>
 app.get("/debug/setvidara", async (c) => {
   const key = String(c.req.query("key") || "").trim();
@@ -3952,7 +4043,7 @@ app.post("/debug/insert", async (c) => {
   const HOSTCOL: Record<string, string> = {
     streamtape: "streamtape_url", vidmoly: "vidmoly_url", mixdrop: "mixdrop_url",
     ufoload: "ufoload_url", abyss: "abyss_url", byse: "byse_url",
-    earnvids: "earnvids_url", doodstream: "doodstream_url", vidara: "vidara_url",
+    earnvids: "earnvids_url", doodstream: "doodstream_url", vidara: "vidara_url", lulustream: "lulustream_url",
   };
   let inserted = 0; const errors: string[] = [];
   const key = c.env.TMDB_API_KEY;
@@ -4144,7 +4235,7 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
   if (stmts.length) {
     try { await db.batch(stmts); } catch { /* ignore */ }
     try {
-      await db.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND is_title_only=0").run();
+      await db.prepare("UPDATE media_items SET is_active=0, updated_at=datetime('now') WHERE is_active=1 AND streamtape_url='' AND vidmoly_url='' AND mixdrop_url='' AND ufoload_url='' AND abyss_url='' AND byse_url='' AND earnvids_url='' AND doodstream_url='' AND vidara_url='' AND lulustream_url='' AND is_title_only=0").run();
     } catch { /* ignore */ }
   }
   const next = cur + rows.length;
