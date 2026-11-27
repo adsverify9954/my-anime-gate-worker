@@ -1643,6 +1643,21 @@ async function runSync(env: Env): Promise<number> {
   // bhi process hon — warna pehle 3 hi baar baar pakde jate hain.
   if (uploads.length) syncCursor = syncCursor % uploads.length;
   const rotatedUploads = uploads.length ? [...uploads.slice(syncCursor), ...uploads.slice(0, syncCursor)] : uploads;
+  // DEAD-REF BLOCKLIST: validator ne jo files host par delete mark ki hain unhe
+  // listing (stale cache) me wapas aane par bhi skip karo — warna ghost row
+  // (Dhamaal 4 case) har sync me dobara ban jaati thi.
+  const deadRefs = new Set<string>();
+  try {
+    const drRows = await db.prepare("SELECT key FROM sync_state WHERE key LIKE 'deadref:%'").all<any>();
+    for (const r of (drRows.results || [])) deadRefs.add(String(r.key));
+  } catch { /* ignore */ }
+  const deadKeyOf = (host: string, url: string): string => {
+    const m = host === "streamtape" ? (url.match(/\/(?:e|v|f|file)\/([A-Za-z0-9]+)/)?.[1] || "")
+      : host === "mixdrop" ? (url.match(/\/(?:e|f|v)\/([A-Za-z0-9]+)/)?.[1] || url.match(/\/v2\/([A-Za-z0-9]+)\.mp4/)?.[1] || "")
+      : host === "ufoload" ? (url.match(/\/files\/([A-Za-z0-9]+)/)?.[1] || "")
+      : "";
+    return m ? `deadref:${host}:${m}` : "";
+  };
   // CURSOR FIX: cursor SCANNED uploads se aage badhta hai (processed + skipped),
   // sirf processed se nahi — warna already-ingested items par cursor atak jata tha
   // aur naye uploads (jaise naye MixDrop files) queue me KABHI nahi aate the.
@@ -1651,6 +1666,9 @@ async function runSync(env: Env): Promise<number> {
     // har run max ~40 uploads SCAN karo (budget/timeout guard) — baki next run
     if (examined >= 120) { lastSyncErrors.push("scan-cap: 120 — next run continue karega"); break; }
     examined++;
+    // Host se delete ho chuki file → koi ingest nahi.
+    const deadKey = deadKeyOf(String(upload.host || ""), String(upload.pageUrl || ""));
+    if (deadKey && deadRefs.has(deadKey)) continue;
     if (budget < 3) { lastSyncErrors.push("budget: pausing \u2014 next run continue karega"); break; }
     // Cloudflare free plan ka 50-subrequest limit hai \u2014 ek run me zyada uploads process
     // karenge to invocation chupke se mar jayega (state update nahi hoga). Isliye
@@ -3403,7 +3421,7 @@ app.get("/debug/rename", async (c) => {
 
 app.get("/debug/clearcache", async (c) => {
   try {
-    await c.env.DB.prepare("DELETE FROM sync_state WHERE key IN ('uploads_cache','uploads_cache_at','mxcooldown','sync_cursor')").run();
+    await c.env.DB.prepare("DELETE FROM sync_state WHERE key IN ('uploads_cache','uploads_cache_at','mxcooldown','sync_cursor') OR key LIKE 'uploads_cache%'").run();
     return c.json({ ok: true, cleared: true }, 200, GATE_RESOLVE_CORS as any);
   } catch (e: any) { return c.json({ ok:false, error:String(e).slice(0,150) }, 500); }
 });
@@ -3817,10 +3835,12 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
     const mx = String(r.mixdrop_url || "");
     const uf = String(r.ufoload_url || "");
     let stDead = false, mxDead = false, ufDead = false;
+    let stRef = "", mxRef = "", ufId = "";
 
     if (st.includes("streamtape") && login && stKey) {
       const ref = st.match(/\/(?:e|v|f|file)\/([A-Za-z0-9]+)/)?.[1] || "";
       if (ref) {
+        stRef = ref;
         try {
           const j = await fetchJson(`https://api.streamtape.com/file/info?file=${ref}&login=${encodeURIComponent(login)}&key=${encodeURIComponent(stKey)}`);
           const info = j.json?.result?.[ref];
@@ -3835,6 +3855,7 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
       const ref = mx.match(/\/(?:e|f|v)\/([A-Za-z0-9]+)/)?.[1]
         || mx.match(/\/v2\/([A-Za-z0-9]+)\.mp4/)?.[1] || "";
       if (ref) {
+        mxRef = ref;
         try {
           const j = await fetchJson(`https://api.mixdrop.ag/fileinfo?ref=${ref}&email=${encodeURIComponent(mxEmail)}&key=${encodeURIComponent(mxKey)}`);
           if (j.ok && j.json) {
@@ -3849,6 +3870,7 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
     if (uf && ufKey) {
       const fid = uf.match(/\/files\/([A-Za-z0-9]+)/)?.[1] || "";
       if (fid) {
+        ufId = fid;
         try {
           const res = await fetch(`https://ufoload.com/api/v1/files/${fid}/links`, {
             method: "POST",
@@ -3858,6 +3880,12 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
         } catch { /* unknown → alive */ }
       }
     }
+
+    // Dead ref ko permanent blocklist me daalo — sync stale listing cache se bhi
+    // deleted file dobara ingest na kare (Dhamaal 4 ghost row ka root fix).
+    if (stDead && stRef) stmts.push(db.prepare("INSERT INTO sync_state (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind("deadref:streamtape:" + stRef, "1"));
+    if (mxDead && mxRef) stmts.push(db.prepare("INSERT INTO sync_state (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind("deadref:mixdrop:" + mxRef, "1"));
+    if (ufDead && ufId) stmts.push(db.prepare("INSERT INTO sync_state (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind("deadref:ufoload:" + ufId, "1"));
 
     if (stDead) { stmts.push(db.prepare("UPDATE media_items SET streamtape_url='' WHERE id=?").bind(r.id)); cleared++; }
     if (mxDead) { stmts.push(db.prepare("UPDATE media_items SET mixdrop_url='' WHERE id=?").bind(r.id)); cleared++; }
