@@ -1391,12 +1391,23 @@ async function listMixdropUploads(env: Env, db: D1Database, cache: Map<string, n
     const ftitle = String(folder.title || "").trim();
     const generic = /movie|remote|subtitle/i.test(ftitle);
 
-    let tmdbId: number | null = cache.get("mdfolder:" + fid) ?? null;
+    // mdfolder2: naya cache version — purana mdfolder cache (jaise "Solo leveling"
+    // folder par movie id 1357633) ghost movie rows bana raha tha, isliye naye
+    // prefix se re-resolve hota hai.
+    let tmdbId: number | null = cache.get("mdfolder2:" + fid) ?? null;
     if (tmdbId == null && !generic) {
       const parsedF = parseFilename(ftitle);
       if (parsedF.title) {
-        const meta = await tmdbMatch(env, parsedF).catch(() => null);
-        if (meta) { tmdbId = meta.tmdbId; cache.set("mdfolder:" + fid, tmdbId); }
+        // Folder = show ka naam. TV-first resolution: movie search "Solo leveling"
+        // par ReAwakening movie pakad leta tha aur folder ke saare episodes movie
+        // row me chale jaate the. TV match na mile to tmdbMatch khud movie fallback
+        // karta hai.
+        const meta = await tmdbMatch(env, {
+          ...parsedF,
+          season: parsedF.season ?? 1,
+          episode: parsedF.episode ?? 1,
+        }).catch(() => null);
+        if (meta) { tmdbId = meta.tmdbId; cache.set("mdfolder2:" + fid, tmdbId); }
       }
     }
 
@@ -1482,7 +1493,7 @@ async function runSync(env: Env): Promise<number> {
   let budget = 20;
   const mdCache = new Map<string, number>();
   try {
-    const cacheRows = await db.prepare("SELECT key, value FROM sync_state WHERE key LIKE 'mdfolder:%'").all<any>();
+    const cacheRows = await db.prepare("SELECT key, value FROM sync_state WHERE key LIKE 'mdfolder%'").all<any>();
     for (const r of (cacheRows.results || [])) mdCache.set(r.key, parseInt(r.value, 10) || 0);
   } catch { /* ignore */ }
 
@@ -2407,7 +2418,7 @@ app.get("/debug/discovery", async (c) => {
   try {
     const mdCache = new Map<string, number>();
     try {
-      const cacheRows = await c.env.DB.prepare("SELECT key, value FROM sync_state WHERE key LIKE 'mdfolder:%'").all<any>();
+      const cacheRows = await c.env.DB.prepare("SELECT key, value FROM sync_state WHERE key LIKE 'mdfolder%'").all<any>();
       for (const r of (cacheRows.results || [])) mdCache.set(r.key, parseInt(r.value, 10) || 0);
     } catch { /* ignore */ }
     const all: any[] = [
