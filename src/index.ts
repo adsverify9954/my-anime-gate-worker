@@ -1062,8 +1062,53 @@ async function listFilemoonUploads(
   return out;
 }
 
-async function extractUfoload(inputUrl: string, pageUrl?: string): Promise<string | null> {
-  const embedId = (inputUrl.match(/(?:ufoload\.io)\/(?:v|e|embed)\/([A-Za-z0-9]+)/i) || [])[1]
+/**
+ * Vixeo / Vidsonic embed player (streamsonic): page me
+ * <div id="streamsonic-player-root" data-config="<base64>"> hota hai. Config JSON ka
+ * `source` pipe-separated hex chunks hai — decode + reverse karne par direct
+ * HLS/mp4 URL milta hai. Player ads dikhata hai; direct URL se native playback
+ * = zero ads, zero popups.
+ */
+async function extractVixeo(inputUrl: string): Promise<string | null> {
+  const m = String(inputUrl).match(/https?:\/\/(?:www\.)?(vixeo\.io|vidsonic\.net)\/(?:e|d|v|p)\/([A-Za-z0-9]+)/i);
+  if (!m) return null;
+  const host = m[1].toLowerCase();
+  const id = m[2];
+  const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+  for (const page of [`https://${host}/e/${id}`, `https://${host}/embed/${id}`]) {
+    try {
+      const r = await fetchText(page, { Referer: `https://${host}/`, "User-Agent": ua }, 20000);
+      if (!r.ok || !r.text) continue;
+      const b64 = r.text.match(/data-config="([A-Za-z0-9+/=]+)"/)?.[1];
+      if (!b64) continue;
+      let cfg: any = null;
+      try {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        cfg = JSON.parse(new TextDecoder().decode(bytes));
+      } catch { continue; }
+      const src = String(cfg?.source || "");
+      if (!src) continue;
+      let joined = "";
+      let ok = true;
+      for (const part of src.split("|")) {
+        for (let i = 0; i + 1 < part.length; i += 2) {
+          const code = parseInt(part.slice(i, i + 2), 16);
+          if (!Number.isFinite(code)) { ok = false; break; }
+          joined += String.fromCharCode(code);
+        }
+        if (!ok) break;
+      }
+      if (!ok || !joined) continue;
+      const direct = joined.split("").reverse().join("");
+      if (/^https?:\/\//i.test(direct)) return direct;
+    } catch { /* next page */ }
+  }
+  return null;
+}
+
+async function extractUfoload(inputUrl: string, pageUrl?: string): Promise<string | null> {  const embedId = (inputUrl.match(/(?:ufoload\.io)\/(?:v|e|embed)\/([A-Za-z0-9]+)/i) || [])[1]
     || (pageUrl ? (pageUrl.match(/(?:ufoload\.io)\/(?:v|e|embed)\/([A-Za-z0-9]+)/i) || [])[1] : null);
   const resolvedPage = embedId ? `https://ufoload.io/v/${embedId}` : pageUrl || inputUrl;
   const { ok, status, text } = await fetchText(resolvedPage, { Referer: "https://ufoload.io/", Origin: "https://ufoload.io" });
@@ -3141,6 +3186,7 @@ app.get("/resolve", async (c) => {
       else if (/mixdrop|mxdrop/i.test(hname)) { hostDirect = await extractMixdrop(target.href); via = "mixdrop"; }
       else if (/vidmoly/i.test(hname)) { hostDirect = await extractVidmoly(target.href); via = "vidmoly"; }
       else if (/ufoload/i.test(hname)) { hostDirect = await extractUfoload(target.href); via = "ufoload"; }
+      else if (/vixeo\.io|vidsonic\.net/i.test(hname)) { hostDirect = await extractVixeo(target.href); via = "vixeo"; }
       else if (/dood/i.test(hname)) {
         const code = (target.pathname.match(/\/(?:e|d|file)\/([A-Za-z0-9]+)/i) || [])[1];
         if (code) { hostDirect = await extractDoodstreamEmbed(c.env, code, target.origin); via = "doodstream"; }
@@ -3714,6 +3760,18 @@ app.get("/debug/tmdb", async (c) => {
   const p = parseFilename(name);
   const m = await tmdbMatch(c.env, p);
   return c.json({ ok: !!m, input: name, title: p.title, tmdbId: m?.tmdbId ?? null, type: m?.type ?? null, name: m?.name ?? null }, 200, GATE_RESOLVE_CORS as any);
+});
+
+// Vixeo/Vidsonic direct-link test: /debug/vixeo?url=<embed url>
+app.get("/debug/vixeo", async (c) => {
+  const target = gateParseExternalUrl(c.req.query("url") || "");
+  if (!target) return c.json({ ok: false, error: "valid url required" }, 400);
+  try {
+    const direct = await extractVixeo(target.href);
+    return c.json({ ok: !!direct, url: direct, type: direct && /\.m3u8/i.test(direct) ? "m3u8" : "mp4" }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) {
+    return c.json({ ok: false, error: String(e?.message ?? e).slice(0, 200) }, 500);
+  }
 });
 
 
