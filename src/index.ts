@@ -1269,13 +1269,14 @@ async function luluKey(env: Env): Promise<string> {
   } catch { return ""; }
 }
 
-/** Byse API key: env secret ya D1 sync_state cfg:byse_key. */
+/** Byse API key: D1 cfg:byse_key pehle (dashboard me purani secret ho sakti hai), phir env. */
 async function byseKey(env: Env): Promise<string> {
-  if (env.BYSE_API_KEY) return String(env.BYSE_API_KEY);
   try {
     const r = await env.DB.prepare("SELECT value FROM sync_state WHERE key='cfg:byse_key'").first<any>();
-    return String(r?.value || "");
-  } catch { return ""; }
+    const v = String(r?.value || "");
+    if (v) return v;
+  } catch { /* ignore */ }
+  return String(env.BYSE_API_KEY || "");
 }
 
 /** LuluStream video list — API at api.lulustream.com (embed link lplaygo.com/<code>). */
