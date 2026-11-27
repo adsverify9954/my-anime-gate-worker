@@ -918,7 +918,7 @@ async function updateHostUrl(env: Env, rowId: string, host: string, url: string)
   if (!field || !url) return;
   try {
     await env.DB.prepare(
-      `UPDATE media_items SET ${field}=?, updated_at=datetime('now') WHERE id=? AND ${field}<>?`,
+      `UPDATE media_items SET ${field}=?, is_active=1, updated_at=datetime('now') WHERE id=? AND ${field}<>?`,
     ).bind(url, rowId, url).run();
   } catch (e) {
     console.log("url update failed", host, String(e).slice(0, 100));
