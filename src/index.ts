@@ -3840,12 +3840,23 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
   const ufKey = String(env.UFOLOAD_API_KEY || env.UFOLOAD_KEY || "");
   const stmts: any[] = [];
   let cleared = 0;
+  // File name → row id key (tmdb_<id>_..._SxxEyy.mp4). Cross-linked rows
+  // (jaise Hanaori E2 ka ST URL Strongest Magician E2 file par) pakadne ke liye.
+  const rowKeyOfName = (name: string): string => {
+    const s = String(name || "");
+    const m = s.match(/tmdb[_\s]?(\d+)/i);
+    if (!m) return "";
+    const tid = parseInt(m[1], 10) || 0;
+    const se = s.match(/[Ss](\d{1,2})[ ._-]?[Ee](\d{1,3})/);
+    return se ? `${tid}:series:${parseInt(se[1], 10)}:${parseInt(se[2], 10)}` : `${tid}:movie:0:0`;
+  };
 
   for (const r of rows) {
     const st = String(r.streamtape_url || "");
     const mx = String(r.mixdrop_url || "");
     const uf = String(r.ufoload_url || "");
     let stDead = false, mxDead = false, ufDead = false;
+    let stMismatch = false, mxMismatch = false;
     let stRef = "", mxRef = "", ufId = "";
 
     if (st.includes("streamtape") && login && stKey) {
@@ -3857,7 +3868,13 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
           const info = j.json?.result?.[ref];
           // outer API status 200 hone par bhi file deleted ho sakti hai —
           // inner file object dekhna zaroori hai (status 404 / name false).
-          if (j.ok && j.json && info) stDead = !(Number(info.status) === 200 && info.name);
+          if (j.ok && j.json && info) {
+            stDead = !(Number(info.status) === 200 && info.name);
+            if (!stDead) {
+              const k = rowKeyOfName(String(info.name || ""));
+              if (k && k !== String(r.id)) stMismatch = true;
+            }
+          }
         } catch { /* unknown → alive */ }
       }
     }
@@ -3871,8 +3888,13 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
           const j = await fetchJson(`https://api.mixdrop.ag/fileinfo?ref=${ref}&email=${encodeURIComponent(mxEmail)}&key=${encodeURIComponent(mxKey)}`);
           if (j.ok && j.json) {
             const res = j.json.result || {};
-            if (j.json.success === true) mxDead = res.deleted === true || (res.status && !/OK/i.test(String(res.status)));
-            else if (/invalid file ref/i.test(String(res.msg || ""))) mxDead = true;
+            if (j.json.success === true) {
+              mxDead = res.deleted === true || (res.status && !/OK/i.test(String(res.status)));
+              if (!mxDead) {
+                const k = rowKeyOfName(String(res.title || ""));
+                if (k && k !== String(r.id)) mxMismatch = true;
+              }
+            } else if (/invalid file ref/i.test(String(res.msg || ""))) mxDead = true;
           }
         } catch { /* unknown → alive */ }
       }
@@ -3901,6 +3923,10 @@ async function validateLinks(env: Env, limit: number): Promise<{ checked: number
     if (stDead) { stmts.push(db.prepare("UPDATE media_items SET streamtape_url='' WHERE id=?").bind(r.id)); cleared++; }
     if (mxDead) { stmts.push(db.prepare("UPDATE media_items SET mixdrop_url='' WHERE id=?").bind(r.id)); cleared++; }
     if (ufDead) { stmts.push(db.prepare("UPDATE media_items SET ufoload_url='' WHERE id=?").bind(r.id)); cleared++; }
+    // File alive hai par kisi doosre row ki hai (cross-link) → URL clear karo.
+    // Sync us file ko uske sahi row me dubara assign kar dega.
+    if (stMismatch) { stmts.push(db.prepare("UPDATE media_items SET streamtape_url='' WHERE id=?").bind(r.id)); cleared++; }
+    if (mxMismatch) { stmts.push(db.prepare("UPDATE media_items SET mixdrop_url='' WHERE id=?").bind(r.id)); cleared++; }
   }
 
   if (stmts.length) {
