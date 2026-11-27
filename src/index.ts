@@ -1108,6 +1108,43 @@ async function extractVixeo(inputUrl: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * Vidara (vidara.to) embed host: page wrapper MIRROR domain par player kholta hai
+ * (jaise oisauh.com). Player POST /api/stream {filecode,device,codecs} karke
+ * `streaming_url` (HLS master.m3u8) leta hai. Ads/Vast isi response me aate hain —
+ * hum sirf direct HLS use karte hain (ads-free native playback).
+ */
+async function extractVidara(inputUrl: string): Promise<string | null> {
+  const m = String(inputUrl).match(/\/e\/([A-Za-z0-9]+)/);
+  if (!m) return null;
+  const id = m[1];
+  const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+  const body = JSON.stringify({ filecode: id, device: "desktop", codecs: ["h264", "h265", "av1"] });
+  const bases: string[] = ["https://vidara.to"];
+  // embed page ka MIRROR var padho (host change ho sakta hai)
+  try {
+    const page = await fetchText(`https://vidara.to/e/${id}`, { Referer: "https://vidara.to/", "User-Agent": ua }, 15000);
+    const mirror = page.ok ? page.text.match(/MIRROR\s*=\s*['"](https?:\/\/[^'"]+)['"]/)?.[1] : "";
+    if (mirror) {
+      try { bases.push(new URL(mirror).origin); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+  for (const base of Array.from(new Set(bases))) {
+    try {
+      const res = await fetch(`${base}/api/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Referer: `${base}/e/${id}`, "User-Agent": ua, Accept: "application/json" },
+        body,
+      });
+      if (!res.ok) continue;
+      const j: any = await res.json().catch(() => null);
+      const direct = String(j?.streaming_url || "");
+      if (/^https?:\/\//i.test(direct)) return direct;
+    } catch { /* next base */ }
+  }
+  return null;
+}
+
 async function extractUfoload(inputUrl: string, pageUrl?: string): Promise<string | null> {  const embedId = (inputUrl.match(/(?:ufoload\.io)\/(?:v|e|embed)\/([A-Za-z0-9]+)/i) || [])[1]
     || (pageUrl ? (pageUrl.match(/(?:ufoload\.io)\/(?:v|e|embed)\/([A-Za-z0-9]+)/i) || [])[1] : null);
   const resolvedPage = embedId ? `https://ufoload.io/v/${embedId}` : pageUrl || inputUrl;
@@ -3187,6 +3224,7 @@ app.get("/resolve", async (c) => {
       else if (/vidmoly/i.test(hname)) { hostDirect = await extractVidmoly(target.href); via = "vidmoly"; }
       else if (/ufoload/i.test(hname)) { hostDirect = await extractUfoload(target.href); via = "ufoload"; }
       else if (/vixeo\.io|vidsonic\.net/i.test(hname)) { hostDirect = await extractVixeo(target.href); via = "vixeo"; }
+      else if (/vidara\.to|oisauh\.com/i.test(hname)) { hostDirect = await extractVidara(target.href); via = "vidara"; }
       else if (/dood/i.test(hname)) {
         const code = (target.pathname.match(/\/(?:e|d|file)\/([A-Za-z0-9]+)/i) || [])[1];
         if (code) { hostDirect = await extractDoodstreamEmbed(c.env, code, target.origin); via = "doodstream"; }
@@ -3768,6 +3806,18 @@ app.get("/debug/vixeo", async (c) => {
   if (!target) return c.json({ ok: false, error: "valid url required" }, 400);
   try {
     const direct = await extractVixeo(target.href);
+    return c.json({ ok: !!direct, url: direct, type: direct && /\.m3u8/i.test(direct) ? "m3u8" : "mp4" }, 200, GATE_RESOLVE_CORS as any);
+  } catch (e: any) {
+    return c.json({ ok: false, error: String(e?.message ?? e).slice(0, 200) }, 500);
+  }
+});
+
+// Vidara direct-link test: /debug/vidara?url=<embed url>
+app.get("/debug/vidara", async (c) => {
+  const target = gateParseExternalUrl(c.req.query("url") || "");
+  if (!target) return c.json({ ok: false, error: "valid url required" }, 400);
+  try {
+    const direct = await extractVidara(target.href);
     return c.json({ ok: !!direct, url: direct, type: direct && /\.m3u8/i.test(direct) ? "m3u8" : "mp4" }, 200, GATE_RESOLVE_CORS as any);
   } catch (e: any) {
     return c.json({ ok: false, error: String(e?.message ?? e).slice(0, 200) }, 500);
